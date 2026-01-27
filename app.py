@@ -11,7 +11,7 @@ st.set_page_config(page_title="Generador de Ilustraciones", page_icon="📈")
 # --- 🔐 SISTEMA DE CONTRASEÑA ---
 def check_password():
     def password_entered():
-        if st.session_state["password"] == "dominion2025": 
+        if st.session_state["password"] == "historico": 
             st.session_state["password_correct"] = True
             del st.session_state["password"]
         else:
