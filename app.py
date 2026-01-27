@@ -14,7 +14,7 @@ st.set_page_config(page_title="Generador de Ilustraciones", page_icon="📊")
 # --- 🔐 SISTEMA DE CONTRASEÑA ---
 def check_password():
     def password_entered():
-        if st.session_state["password"] == "historico": 
+        if st.session_state["password"] == "prueba": 
             st.session_state["password_correct"] = True
             del st.session_state["password"]
         else:
@@ -29,6 +29,30 @@ def check_password():
 
 if not check_password():
     st.stop()
+
+# =========================================================
+# 🏦 BASE DE DATOS DE COSTOS (EU FACTORS)
+# =========================================================
+# Factores extraídos de costos.xlsx
+# [Plazo]: (Factor Año 1, Factor Año 2)
+FACTORES_COSTOS = {
+    5:  (0.2475, 0.0619),
+    6:  (0.2970, 0.0743),
+    7:  (0.3465, 0.0866),
+    8:  (0.3960, 0.0990),
+    9:  (0.4455, 0.1114),
+    10: (0.4950, 0.1238),
+    11: (0.5445, 0.1361),
+    12: (0.5940, 0.1485),
+    13: (0.6435, 0.1609),
+    14: (0.6930, 0.1733),
+    15: (0.7425, 0.1856),
+    16: (0.7920, 0.1980),
+    17: (0.8415, 0.2104),
+    18: (0.8910, 0.2228),
+    19: (0.9405, 0.2351),
+    20: (0.9900, 0.2475),
+}
 
 # =========================================================
 # 🚀 APLICACIÓN PRINCIPAL
@@ -46,27 +70,26 @@ with st.sidebar:
     
     planes = {}
     
-    # 1. Regulares
+    # 1. Regulares (MSS)
     for i in range(5, 21):
         for filename in csv_files:
             if "MSS" in filename and str(i) in filename:
                 if i < 10 and f"1{i}" in filename: continue 
-                planes[f"MSS - {i} Años"] = filename
+                planes[f"MSS - {i} Años"] = (filename, i) # Guardamos nombre y años
                 break
             
-    # 2. Aporte Único
+    # 2. Aporte Único (MIS)
     for filename in csv_files:
         if "nico" in filename.lower() or "unique" in filename.lower():
-            planes["MIS - Aporte Unico"] = filename
+            planes["MIS - Aporte Unico"] = (filename, 0)
             break
     
     if not planes:
         st.error("🚨 ERROR: No encuentro archivos CSV.")
-        st.write("Archivos en carpeta:", all_files)
         st.stop()
     
     plan_seleccionado = st.selectbox("Selecciona Plan", list(planes.keys()))
-    archivo_csv = planes[plan_seleccionado]
+    archivo_csv, plazo_anios = planes[plan_seleccionado]
     
     if plan_seleccionado == "MIS - Aporte Unico":
         monto_input = st.number_input("Inversión Única", value=10000, step=1000)
@@ -82,7 +105,7 @@ if st.button("Generar Ilustración", type="primary"):
     status = st.empty()
     
     try:
-        status.info("⏳ Procesando datos...")
+        status.info("⏳ Calculando Estructura de Costos...")
         
         # 1. CARGA
         df = pd.read_csv(archivo_csv)
@@ -101,13 +124,12 @@ if st.button("Generar Ilustración", type="primary"):
             
         df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
         df = df.dropna(subset=['Date']).sort_values('Date')
-        
-        if df.empty:
-            st.error("Error: Archivo vacío o fechas incorrectas.")
-            st.stop()
 
-        # 2. CÁLCULOS
+        # 2. SIMULACIÓN DINÁMICA CON COSTOS
+        # Aquí ignoramos el 'Valor Neto' del CSV y creamos uno nuevo con tus reglas
+        
         if plan_seleccionado == "MIS - Aporte Unico":
+            # --- LÓGICA MIS (1.6% Fijo primeros 5 años) ---
             fecha_filtro = pd.Timestamp(year=anio_inicio, month=mes_inicio, day=1)
             df = df[df['Date'] >= fecha_filtro].copy().reset_index(drop=True)
             
@@ -120,37 +142,81 @@ if st.button("Generar Ilustración", type="primary"):
             saldo_act = monto_input
             precios = df['Price'].values
             
+            # Costo Fijo Mensual (Primeros 60 meses) = 1.6% Anual sobre INVERSIÓN INICIAL
+            deduccion_establecimiento = (monto_input * 0.016) / 12
+            
             for i in range(len(df)):
                 aportes_sim.append(monto_input if i==0 else 0)
+                
+                # Rendimiento Mercado
                 if i > 0 and precios[i-1] > 0:
                     saldo_act *= (precios[i] / precios[i-1])
-                if i >= 60:
+                
+                # Deducciones
+                if i < 60: # Primeros 5 años
+                    saldo_act -= deduccion_establecimiento
+                else: # Después del año 5 (Mantenimiento 1% sobre Saldo)
                     saldo_act -= (saldo_act * (0.01/12))
+                
                 saldos.append(saldo_act)
             
             df['Aporte_Simulado'] = aportes_sim
             df['Valor_Neto_Simulado'] = saldos
-        else:
-            df['Year'] = df['Date'].dt.year
-            df_aportes = df[df['Aporte'] > 0]
-            base = df_aportes['Aporte'].iloc[0] if not df_aportes.empty else 500
-            factor = monto_input / base
-            df['Aporte_Simulado'] = df['Aporte'] * factor
-            df['Valor_Neto_Simulado'] = df['Valor Neto'] * factor
 
-        # 3. TABLA Y RENDIMIENTOS (AQUÍ ESTÁ LA CORRECCIÓN)
+        else:
+            # --- LÓGICA MSS (Costos de Apertura Amortizados) ---
+            df['Year'] = df['Date'].dt.year
+            
+            # 1. Calcular el Costo Total de Apertura (Frozen Amount)
+            aporte_anual = monto_input * 12
+            factor1, factor2 = FACTORES_COSTOS.get(plazo_anios, (0,0))
+            
+            costo_total_apertura = (aporte_anual * factor1) + (aporte_anual * factor2)
+            
+            # 2. Calcular la Deducción Mensual Fija (Amortización)
+            meses_totales = plazo_anios * 12
+            deduccion_mensual = costo_total_apertura / meses_totales
+            
+            # Simulación
+            saldos, aportes_sim = [], []
+            saldo_act = 0
+            precios = df['Price'].values
+            
+            for i in range(len(df)):
+                # Solo simulamos hasta el final del plazo elegido
+                if i >= meses_totales:
+                    break
+                    
+                # Aporte Mensual
+                aportes_sim.append(monto_input)
+                saldo_act += monto_input
+                
+                # Rendimiento Mercado
+                if i > 0 and precios[i-1] > 0:
+                    rendimiento = precios[i] / precios[i-1]
+                    saldo_act *= rendimiento
+                
+                # Deducción Mensual Fija (Costo Apertura)
+                saldo_act -= deduccion_mensual
+                
+                saldos.append(saldo_act)
+            
+            # Recortamos el DF al tamaño de la simulación
+            df = df.iloc[:len(saldos)].copy()
+            df['Aporte_Simulado'] = aportes_sim
+            df['Valor_Neto_Simulado'] = saldos
+
+        # 3. TABLA Y RENDIMIENTOS (Base Total Corregida)
+        status.info("⏳ Generando Informe...")
+        
         datos_tabla = df.groupby('Year').agg({'Aporte_Simulado':'sum', 'Valor_Neto_Simulado':'last'}).reset_index()
         datos_tabla['Total Aporte'] = datos_tabla['Aporte_Simulado'].cumsum()
         
         datos_tabla['Saldo_Inicial'] = datos_tabla['Valor_Neto_Simulado'].shift(1).fillna(0)
         datos_tabla['Ganancia'] = datos_tabla['Valor_Neto_Simulado'] - datos_tabla['Saldo_Inicial'] - datos_tabla['Aporte_Simulado']
         
-        # --- FÓRMULA CORREGIDA (Base Total) ---
-        # Usamos (Saldo Inicial + Todo el Aporte del Año) como base.
-        # Esto evita porcentajes exagerados como -150%.
+        # Base de cálculo: Saldo Inicial + Todo el aporte del año (Conservador)
         datos_tabla['Base_Calculo'] = datos_tabla['Saldo_Inicial'] + datos_tabla['Aporte_Simulado']
-        
-        # Evitar división por cero
         datos_tabla['Base_Calculo'] = datos_tabla['Base_Calculo'].replace(0, 1)
         
         datos_tabla['Rendimiento'] = (datos_tabla['Ganancia'] / datos_tabla['Base_Calculo']) * 100
