@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import matplotlib
-matplotlib.use("Agg") # Backend estable para servidores
+matplotlib.use("Agg") 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import io
@@ -44,7 +44,6 @@ with st.sidebar:
     st.header("Configuración")
     nombre_cliente = st.text_input("Nombre Cliente", value="Cliente Ejemplo")
     
-    # GENERADOR DE MENÚ
     planes = {}
     
     # 1. Regulares
@@ -69,7 +68,6 @@ with st.sidebar:
     plan_seleccionado = st.selectbox("Selecciona Plan", list(planes.keys()))
     archivo_csv = planes[plan_seleccionado]
     
-    # INPUTS
     if plan_seleccionado == "MIS - Aporte Unico":
         monto_input = st.number_input("Inversión Única", value=10000, step=1000)
         col1, col2 = st.columns(2)
@@ -83,15 +81,13 @@ with st.sidebar:
 if st.button("Generar Ilustración", type="primary"):
     status = st.empty()
     
-    # INICIO DEL PROCESO
     try:
-        status.info("⏳ Leyendo datos...")
+        status.info("⏳ Procesando datos...")
         
-        # 1. CARGA DE DATOS
+        # 1. CARGA
         df = pd.read_csv(archivo_csv)
         df.columns = df.columns.str.strip()
         
-        # Función limpieza
         def limpiar(x):
             return x.astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False).str.strip()
             
@@ -99,7 +95,6 @@ if st.button("Generar Ilustración", type="primary"):
             if col in df.columns:
                 df[col] = pd.to_numeric(limpiar(df[col]), errors='coerce').fillna(0)
 
-        # 2. FECHAS
         if 'Date' not in df.columns:
             st.error("El archivo no tiene columna 'Date'")
             st.stop()
@@ -108,12 +103,10 @@ if st.button("Generar Ilustración", type="primary"):
         df = df.dropna(subset=['Date']).sort_values('Date')
         
         if df.empty:
-            st.error("Error: El archivo está vacío o las fechas fallaron.")
+            st.error("Error: Archivo vacío o fechas incorrectas.")
             st.stop()
 
-        # 3. CÁLCULOS
-        status.info(f"⏳ Calculando {plan_seleccionado}...")
-        
+        # 2. CÁLCULOS
         if plan_seleccionado == "MIS - Aporte Unico":
             fecha_filtro = pd.Timestamp(year=anio_inicio, month=mes_inicio, day=1)
             df = df[df['Date'] >= fecha_filtro].copy().reset_index(drop=True)
@@ -145,28 +138,27 @@ if st.button("Generar Ilustración", type="primary"):
             df['Aporte_Simulado'] = df['Aporte'] * factor
             df['Valor_Neto_Simulado'] = df['Valor Neto'] * factor
 
-        # 4. PREPARAR GRÁFICO Y TABLA
-        status.info("⏳ Generando visualización...")
-        
+        # 3. TABLA Y RENDIMIENTOS (AQUÍ ESTÁ LA CORRECCIÓN)
         datos_tabla = df.groupby('Year').agg({'Aporte_Simulado':'sum', 'Valor_Neto_Simulado':'last'}).reset_index()
         datos_tabla['Total Aporte'] = datos_tabla['Aporte_Simulado'].cumsum()
         
-        # Rendimientos
         datos_tabla['Saldo_Inicial'] = datos_tabla['Valor_Neto_Simulado'].shift(1).fillna(0)
         datos_tabla['Ganancia'] = datos_tabla['Valor_Neto_Simulado'] - datos_tabla['Saldo_Inicial'] - datos_tabla['Aporte_Simulado']
         
-        if plan_seleccionado == "MIS - Aporte Unico":
-            base_cap = datos_tabla['Saldo_Inicial'] + datos_tabla['Aporte_Simulado']
-        else:
-            base_cap = datos_tabla['Saldo_Inicial'] + (datos_tabla['Aporte_Simulado']/2)
-            
-        datos_tabla['Rendimiento'] = (datos_tabla['Ganancia'] / base_cap.replace(0,1)) * 100
+        # --- FÓRMULA CORREGIDA (Base Total) ---
+        # Usamos (Saldo Inicial + Todo el Aporte del Año) como base.
+        # Esto evita porcentajes exagerados como -150%.
+        datos_tabla['Base_Calculo'] = datos_tabla['Saldo_Inicial'] + datos_tabla['Aporte_Simulado']
+        
+        # Evitar división por cero
+        datos_tabla['Base_Calculo'] = datos_tabla['Base_Calculo'].replace(0, 1)
+        
+        datos_tabla['Rendimiento'] = (datos_tabla['Ganancia'] / datos_tabla['Base_Calculo']) * 100
 
-        # --- DIBUJAR ---
+        # 4. GRAFICAR
         fig = plt.figure(figsize=(11, 14))
         plt.suptitle(f'Plan: {plan_seleccionado}\nCliente: {nombre_cliente}', fontsize=18, weight='bold', y=0.96)
         
-        # Texto Resumen
         tot_inv = datos_tabla['Total Aporte'].iloc[-1]
         val_fin = datos_tabla['Valor_Neto_Simulado'].iloc[-1]
         roi = ((val_fin - tot_inv)/tot_inv)*100
@@ -174,7 +166,6 @@ if st.button("Generar Ilustración", type="primary"):
         plt.figtext(0.5, 0.90, f"Inv: ${tot_inv:,.0f} | Final: ${val_fin:,.0f} | ROI: {roi:+.1f}%", 
                    ha="center", fontsize=12, bbox=dict(facecolor='#f0f8ff', edgecolor='blue'))
 
-        # Gráfico
         ax = plt.subplot2grid((10, 1), (1, 0), rowspan=4)
         ax.plot(df['Date'], df['Valor_Neto_Simulado'], color='#004c99', lw=2, label="Valor Cuenta")
         ax.plot(df['Date'], df['Aporte_Simulado'].cumsum(), color='gray', ls='--', label="Aporte Total")
@@ -182,7 +173,6 @@ if st.button("Generar Ilustración", type="primary"):
         ax.grid(True, alpha=0.3)
         ax.yaxis.set_major_formatter(ticker.StrMethodFormatter('${x:,.0f}'))
 
-        # Tabla
         ax_t = plt.subplot2grid((10, 1), (6, 0), rowspan=4)
         ax_t.axis('off')
         
@@ -201,7 +191,6 @@ if st.button("Generar Ilustración", type="primary"):
         tbl.auto_set_font_size(False)
         tbl.set_fontsize(10)
 
-        # Colorear Tabla
         for (r, c), cell in tbl.get_celld().items():
             if r == 0: 
                 cell.set_facecolor('#40466e')
@@ -211,22 +200,20 @@ if st.button("Generar Ilustración", type="primary"):
             
             if c == 4 and r > 0:
                 txt = cell.get_text().get_text()
-                if '+' in txt: cell.set_text_props(color='green', weight='bold')
-                else: cell.set_text_props(color='red', weight='bold')
+                color = 'green' if '+' in txt else ('red' if '-' in txt else 'black')
+                cell.set_text_props(color=color, weight='bold')
 
         plt.tight_layout(rect=[0, 0.03, 1, 0.88])
         st.pyplot(fig)
         
-        # PDF
-        status.info("⏳ Creando PDF...")
         img = io.BytesIO()
         plt.savefig(img, format='pdf')
         img.seek(0)
         
-        status.success("✅ ¡Listo!")
         st.download_button("📥 Descargar PDF", data=img, file_name=f"Ilustracion_{nombre_cliente}.pdf", mime="application/pdf")
+        status.success("✅ ¡PDF Generado Correctamente!")
 
     except Exception as e:
-        status.error("❌ Ocurrió un error inesperado:")
+        status.error("❌ Error:")
         st.error(e)
         st.write(traceback.format_exc())
