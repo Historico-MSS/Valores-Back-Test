@@ -11,7 +11,7 @@ st.set_page_config(page_title="Generador de Ilustraciones", page_icon="📈")
 # --- 🔐 SISTEMA DE CONTRASEÑA ---
 def check_password():
     def password_entered():
-        if st.session_state["password"] == "historico": 
+        if st.session_state["password"] == "dominion2025": 
             st.session_state["password_correct"] = True
             del st.session_state["password"]
         else:
@@ -48,13 +48,12 @@ with st.sidebar:
     
     # 1. BUSCAR ARCHIVOS MSS (5-20 años)
     for i in range(5, 21):
-        found = False
         for filename in csv_files:
             if "MSS" in filename and str(i) in filename:
+                # Evitar confusiones (ej: que 8 no coincida con 18)
                 if i < 10 and f"1{i}" in filename:
                     continue 
                 planes[f"MSS - {i} Años"] = filename
-                found = True
                 break
             
     # 2. Plan Aporte Único
@@ -65,6 +64,7 @@ with st.sidebar:
     
     if not planes:
         st.error("🚨 NO SE ENCONTRARON ARCHIVOS CSV.")
+        st.warning(f"Archivos en la carpeta: {all_files}")
         st.stop()
     
     plan_seleccionado = st.selectbox("Selecciona el Plan", list(planes.keys()))
@@ -168,4 +168,14 @@ if st.button("Generar Ilustración", type="primary"):
         df = procesar_datos(archivo_csv, monto_input, plan_seleccionado, anio_inicio, mes_inicio)
         
         if df is not None:
-            #
+            # 1. Preparar Datos
+            datos_grafico = df.copy()
+            datos_grafico['Aporte Acumulado'] = datos_grafico['Aporte_Simulado'].cumsum()
+            
+            datos_tabla = df.groupby('Year').agg({
+                'Aporte_Simulado': 'sum', 
+                'Valor_Neto_Simulado': 'last'
+            }).reset_index()
+            datos_tabla['Total Aporte'] = datos_tabla['Aporte_Simulado'].cumsum()
+
+            # --- CÁ
