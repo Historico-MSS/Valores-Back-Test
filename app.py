@@ -91,6 +91,7 @@ with st.sidebar:
     
     # --- INPUTS DINÁMICOS ---
     aportes_extra_mis = [] 
+    retiros_programados = [] # Nueva lista para retiros
     
     if plan_seleccionado == "MIS - Aporte Unico":
         st.info("Plan de Inversión (Aporte Único + Extras)")
@@ -104,7 +105,7 @@ with st.sidebar:
         with col2: 
             mes_inicio = st.selectbox("Mes Inicio", range(1, 13))
             
-        # --- APORTES ADICIONALES (RECUPERADO) ---
+        # --- APORTES ADICIONALES ---
         with st.expander("➕ Agregar Aportes Adicionales"):
             st.markdown("Programa inyecciones de capital futuras.")
             activar_extras = st.checkbox("Habilitar aportes extra")
@@ -131,19 +132,44 @@ with st.sidebar:
         st.info("Plan de Ahorro Regular")
         monto_input = st.number_input("Monto del Aporte (USD)", value=500, step=50)
         
-        # --- SELECTOR DE FRECUENCIA (RECUPERADO) ---
         frecuencia_pago = st.selectbox("Frecuencia de Aporte", ["Mensual", "Trimestral", "Semestral", "Anual"])
         mapa_meses = {"Mensual": 1, "Trimestral": 3, "Semestral": 6, "Anual": 12}
         step_meses = mapa_meses[frecuencia_pago]
         
         anio_inicio, mes_inicio = None, None
 
+    # --- NUEVO: SECCIÓN DE RETIROS (COMÚN A AMBOS PLANES) ---
+    with st.expander("💸 Programar Retiros Parciales"):
+        st.markdown("Retiros de capital (Sin penalización, solo reduce saldo).")
+        activar_retiros = st.checkbox("Habilitar Retiros")
+        
+        if activar_retiros:
+            for i in range(3): # Hasta 3 retiros
+                st.divider()
+                st.caption(f"Retiro #{i+1}")
+                c_monto_r, c_anio_r, c_mes_r = st.columns([2, 1.5, 1])
+                with c_monto_r:
+                    m_retiro = st.number_input(f"Monto Retiro #{i+1}", value=0, step=1000, key=f"mr{i}")
+                with c_anio_r:
+                    # Si no hay anio_inicio definido (MSS), usamos una logica relativa o pedimos input
+                    val_min_ret = anio_inicio if anio_inicio else 2000
+                    a_retiro = st.number_input(f"Año #{i+1}", min_value=val_min_ret, max_value=2035, value=val_min_ret+5, key=f"ar{i}")
+                with c_mes_r:
+                    mes_retiro = st.selectbox(f"Mes #{i+1}", range(1, 13), key=f"mer{i}")
+                
+                if m_retiro > 0:
+                    retiros_programados.append({
+                        "monto": m_retiro,
+                        "anio": a_retiro,
+                        "mes": mes_retiro
+                    })
+
 # --- BOTÓN DE ACCIÓN ---
 if st.button("Generar Ilustración", type="primary"):
     status = st.empty()
     
     try:
-        status.info("⏳ Calculando Multi-Capas...")
+        status.info("⏳ Calculando flujos con retiros...")
         
         # 1. CARGA
         df = pd.read_csv(archivo_csv)
@@ -179,6 +205,7 @@ if st.button("Generar Ilustración", type="primary"):
             total_valor_rescate = []
             total_aportes_acumulados = [] 
             flujo_aportes = [] 
+            flujo_retiros = [] # Para guardar registro
             
             cubetas = [{
                 "monto_original": monto_input,
@@ -208,20 +235,49 @@ if st.button("Generar Ilustración", type="primary"):
                 aporte_del_mes_total = 0
                 valor_cuenta_mes_total = 0
                 valor_rescate_mes_total = 0
+                retiro_del_mes = 0
                 
+                # A. Detectar Retiro Programado para este mes
+                for r in retiros_programados:
+                    if r['anio'] == anio_actual and r['mes'] == mes_actual:
+                        retiro_del_mes += r['monto']
+                
+                flujo_retiros.append(retiro_del_mes)
+
+                # B. Calcular Saldo Total Disponible antes de procesar cubetas individuales
+                # (Necesario para prorratear el retiro)
+                saldo_total_previo = 0
                 for cubeta in cubetas:
+                    if cubeta["activa"]: saldo_total_previo += cubeta["saldo_actual"]
+
+                # C. Procesar Cubetas
+                for cubeta in cubetas:
+                    # Activar si toca
                     if not cubeta["activa"]:
                         if anio_actual == cubeta["fecha_inicio"][0] and mes_actual == cubeta["fecha_inicio"][1]:
                             cubeta["activa"] = True
                             cubeta["saldo_actual"] = cubeta["monto_original"]
                             aporte_del_mes_total += cubeta["monto_original"]
                             acumulado_aportado += cubeta["monto_original"]
+                            # Recalcular saldo total previo al añadir nuevo capital
+                            saldo_total_previo += cubeta["monto_original"]
                     
                     if cubeta["activa"]:
+                        # 1. Rendimiento Mercado
                         if cubeta["meses_activa"] > 0 and i > 0 and precios[i-1] > 0:
                             rendimiento = precios[i] / precios[i-1]
                             cubeta["saldo_actual"] *= rendimiento
                         
+                        # 2. APLICAR RETIRO (Prorrateado)
+                        # Si hay retiro, reducimos el saldo de esta cubeta proporcionalmente
+                        if retiro_del_mes > 0 and saldo_total_previo > 0:
+                            # Cuánto pesa esta cubeta en el total
+                            peso_cubeta = cubeta["saldo_actual"] / saldo_total_previo
+                            # Cuánto le quitamos a esta cubeta
+                            monto_a_quitar = retiro_del_mes * peso_cubeta
+                            cubeta["saldo_actual"] = max(0, cubeta["saldo_actual"] - monto_a_quitar)
+
+                        # 3. Deducciones Costos
                         deduccion_establecimiento = (cubeta["monto_original"] * 0.016) / 12
                         
                         if cubeta["meses_activa"] < 60:
@@ -229,6 +285,10 @@ if st.button("Generar Ilustración", type="primary"):
                         else:
                             cubeta["saldo_actual"] -= (cubeta["saldo_actual"] * (0.01/12))
                         
+                        # Evitar saldo negativo por costos
+                        cubeta["saldo_actual"] = max(0, cubeta["saldo_actual"])
+
+                        # 4. Cálculo Rescate
                         if cubeta["meses_activa"] < 60:
                             meses_restantes = 60 - (cubeta["meses_activa"] + 1)
                             penalizacion = meses_restantes * deduccion_establecimiento
@@ -246,6 +306,7 @@ if st.button("Generar Ilustración", type="primary"):
                 total_valor_rescate.append(valor_rescate_mes_total)
             
             df['Aporte_Simulado'] = flujo_aportes
+            df['Retiro_Simulado'] = flujo_retiros # Guardar retiros
             df['Aporte_Acumulado_Total'] = total_aportes_acumulados 
             df['Valor_Neto_Simulado'] = total_valor_neto
             df['Valor_Rescate_Simulado'] = total_valor_rescate
@@ -264,13 +325,20 @@ if st.button("Generar Ilustración", type="primary"):
             deduccion_mensual = costo_total_apertura / meses_totales
             
             saldos, rescates, aportes_sim = [], [], []
+            flujo_retiros = []
             saldo_act = 0
             acumulado_aportado = 0
             precios = df['Price'].values
             
             for i in range(len(df)):
+                # Detectar fecha
+                fecha_actual = df['Date'].iloc[i]
+                anio_actual = fecha_actual.year
+                mes_actual = fecha_actual.month
+
                 if i >= meses_totales: break
                 
+                # Aporte
                 monto_del_mes = 0
                 if i % step_meses == 0:
                     monto_del_mes = monto_input
@@ -279,12 +347,26 @@ if st.button("Generar Ilustración", type="primary"):
                 saldo_act += monto_del_mes
                 acumulado_aportado += monto_del_mes
                 
+                # Rendimiento
                 if i > 0 and precios[i-1] > 0:
                     saldo_act *= (precios[i] / precios[i-1])
                 
+                # RETIRO (MSS: Directo del saldo)
+                retiro_del_mes = 0
+                for r in retiros_programados:
+                    if r['anio'] == anio_actual and r['mes'] == mes_actual:
+                        retiro_del_mes += r['monto']
+                
+                flujo_retiros.append(retiro_del_mes)
+                
+                if retiro_del_mes > 0:
+                    saldo_act = max(0, saldo_act - retiro_del_mes)
+
+                # Deducciones
                 saldo_act -= deduccion_mensual
                 saldos.append(saldo_act)
                 
+                # Rescate
                 meses_restantes = meses_totales - (i + 1)
                 penalizacion = meses_restantes * deduccion_mensual if meses_restantes > 0 else 0
                 valor_rescate = max(0, saldo_act - penalizacion)
@@ -292,6 +374,7 @@ if st.button("Generar Ilustración", type="primary"):
             
             df = df.iloc[:len(saldos)].copy()
             df['Aporte_Simulado'] = aportes_sim
+            df['Retiro_Simulado'] = flujo_retiros
             df['Aporte_Acumulado_Total'] = df['Aporte_Simulado'].cumsum()
             df['Valor_Neto_Simulado'] = saldos
             df['Valor_Rescate_Simulado'] = rescates
@@ -301,14 +384,16 @@ if st.button("Generar Ilustración", type="primary"):
         
         datos_tabla = df.groupby('Year').agg({
             'Aporte_Simulado': 'sum', 
+            'Retiro_Simulado': 'sum',
             'Valor_Neto_Simulado': 'last',
             'Valor_Rescate_Simulado': 'last',
             'Aporte_Acumulado_Total': 'last'
         }).reset_index()
         
-        # Rendimiento
+        # Rendimiento (Ajustado por retiros: Ganancia = Final - Inicial - Aporte + Retiro)
         datos_tabla['Saldo_Inicial'] = datos_tabla['Valor_Neto_Simulado'].shift(1).fillna(0)
-        datos_tabla['Ganancia'] = datos_tabla['Valor_Neto_Simulado'] - datos_tabla['Saldo_Inicial'] - datos_tabla['Aporte_Simulado']
+        datos_tabla['Ganancia'] = datos_tabla['Valor_Neto_Simulado'] - datos_tabla['Saldo_Inicial'] - datos_tabla['Aporte_Simulado'] + datos_tabla['Retiro_Simulado']
+        
         datos_tabla['Base_Calculo'] = (datos_tabla['Saldo_Inicial'] + datos_tabla['Aporte_Simulado']).replace(0, 1)
         datos_tabla['Rendimiento'] = (datos_tabla['Ganancia'] / datos_tabla['Base_Calculo']) * 100
 
@@ -328,8 +413,13 @@ if st.button("Generar Ilustración", type="primary"):
         tot_inv = datos_tabla['Aporte_Acumulado_Total'].iloc[-1]
         val_fin = datos_tabla['Valor_Neto_Simulado'].iloc[-1]
         val_rescate_fin = datos_tabla['Valor_Rescate_Simulado'].iloc[-1]
+        tot_retirado = datos_tabla['Retiro_Simulado'].sum()
         
-        resumen = f"Inversión Total: ${tot_inv:,.0f} | Valor Cuenta: ${val_fin:,.0f} | Valor Rescate: ${val_rescate_fin:,.0f}"
+        # Resumen incluyendo retiros si los hay
+        if tot_retirado > 0:
+             resumen = f"Inv. Total: ${tot_inv:,.0f} | Retiros: ${tot_retirado:,.0f} | Valor Cuenta: ${val_fin:,.0f}"
+        else:
+             resumen = f"Inversión Total: ${tot_inv:,.0f} | Valor Cuenta: ${val_fin:,.0f} | Valor Rescate: ${val_rescate_fin:,.0f}"
         
         plt.figtext(0.5, 0.88, resumen, ha="center", fontsize=11, weight='bold',
                    bbox=dict(facecolor='#f0f8ff', edgecolor='blue'))
@@ -351,13 +441,18 @@ if st.button("Generar Ilustración", type="primary"):
         ax_t = plt.subplot2grid((10, 1), (6, 0), rowspan=4)
         ax_t.axis('off')
         
-        rows = [['Año', 'Aporte Anual', 'Aporte Total', 'Valor Cuenta', 'Valor Rescate', '% Rend']]
+        # TABLA DEFINITIVA (7 COLUMNAS: AHORA CON RETIROS)
+        # Columnas: Año | Aporte Total | Retiro Anual | Valor Cuenta | Valor Rescate | % Rend
+        
+        rows = [['Año', 'Aporte Total', 'Retiro Anual', 'Valor Cuenta', 'Valor Rescate', '% Rend']]
         
         for _, r in datos_tabla.iterrows():
+            str_retiro = f"${r['Retiro_Simulado']:,.0f}" if r['Retiro_Simulado'] > 0 else "-"
+            
             rows.append([
                 str(int(r['Year'])), 
-                f"${r['Aporte_Simulado']:,.0f}", 
                 f"${r['Aporte_Acumulado_Total']:,.0f}", 
+                str_retiro,
                 f"${r['Valor_Neto_Simulado']:,.0f}", 
                 f"${r['Valor_Rescate_Simulado']:,.0f}",
                 f"{r['Rendimiento']:+.1f}%"
@@ -366,7 +461,7 @@ if st.button("Generar Ilustración", type="primary"):
         tbl = ax_t.table(cellText=rows, loc='center', cellLoc='center')
         tbl.scale(1, 1.35)
         tbl.auto_set_font_size(False)
-        tbl.set_fontsize(9)
+        tbl.set_fontsize(8) # Un poco más pequeña para que quepa la nueva columna
 
         for (r, c), cell in tbl.get_celld().items():
             if r == 0: 
@@ -375,13 +470,17 @@ if st.button("Generar Ilustración", type="primary"):
             elif r % 2 == 0: 
                 cell.set_facecolor('#f2f2f2')
             
-            # Colorear Rendimiento
+            # Colorear Rendimiento (Col 5)
             if c == 5 and r > 0:
                 txt = cell.get_text().get_text()
                 color = 'green' if '+' in txt else ('red' if '-' in txt else 'black')
                 cell.set_text_props(color=color, weight='bold')
             
-            # Colorear Rescate
+            # Colorear Retiros (Col 2)
+            if c == 2 and r > 0 and cell.get_text().get_text() != "-":
+                 cell.set_text_props(color='#d62728', weight='bold') # Rojo para retiros
+            
+            # Colorear Rescate (Col 4)
             if c == 4 and r > 0:
                 val_res = float(cell.get_text().get_text().replace('$','').replace(',',''))
                 val_cta = float(rows[r][3].replace('$','').replace(',',''))
