@@ -174,31 +174,4 @@ if st.button("Generar Ilustración", type="primary"):
                             c["saldo"] = max(0, c["saldo"] - (ret_mes * peso))
                             
                         deduc = (c["monto"] * 0.016) / 12
-                        if c["edad"] < 60: c["saldo"] -= deduc
-                        else: c["saldo"] -= (c["saldo"] * (0.01/12))
-                        c["saldo"] = max(0, c["saldo"])
-                        
-                        if c["edad"] < 60:
-                            pena = (60 - (c["edad"] + 1)) * deduc
-                            vr_cubeta = max(0, c["saldo"] - pena)
-                        else:
-                            vr_cubeta = c["saldo"]
-                            
-                        vn_mes += c["saldo"]
-                        vr_mes += vr_cubeta
-                        c["edad"] += 1
-                        
-                l_ap.append(ap_mes)
-                l_ap_acum.append(acum_aportado)
-                l_vn.append(vn_mes)
-                l_vr.append(vr_mes)
-                
-            df['Aporte_Sim'] = l_ap
-            df['Retiro_Sim'] = l_ret
-            df['Ap_Acum'] = l_ap_acum
-            df['VN_Sim'] = l_vn
-            df['VR_Sim'] = l_vr
-            
-        else: # MSS
-            df['Year'] = df['Date'].dt.year
-            pagos_anio = 12 / step_meses
+                        if c["edad"] < 60: c["saldo"] -=
