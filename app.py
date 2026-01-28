@@ -282,30 +282,4 @@ if st.button("Generar Ilustración", type="primary"):
                     saldo_act *= (precios[i] / precios[i-1])
                 
                 saldo_act -= deduccion_mensual
-                saldos.append(saldo_act)
-                
-                meses_restantes = meses_totales - (i + 1)
-                penalizacion = meses_restantes * deduccion_mensual if meses_restantes > 0 else 0
-                valor_rescate = max(0, saldo_act - penalizacion)
-                rescates.append(valor_rescate)
-            
-            df = df.iloc[:len(saldos)].copy()
-            df['Aporte_Simulado'] = aportes_sim
-            df['Aporte_Acumulado_Total'] = df['Aporte_Simulado'].cumsum()
-            df['Valor_Neto_Simulado'] = saldos
-            df['Valor_Rescate_Simulado'] = rescates
-
-        # 3. DATOS TABLA
-        status.info("⏳ Generando Informe...")
-        
-        datos_tabla = df.groupby('Year').agg({
-            'Aporte_Simulado': 'sum', 
-            'Valor_Neto_Simulado': 'last',
-            'Valor_Rescate_Simulado': 'last',
-            'Aporte_Acumulado_Total': 'last'
-        }).reset_index()
-        
-        # Rendimiento
-        datos_tabla['Saldo_Inicial'] = datos_tabla['Valor_Neto_Simulado'].shift(1).fillna(0)
-        datos_tabla['Ganancia'] = datos_tabla['Valor_Neto_Simulado'] - datos_tabla['Saldo_Inicial'] - datos_tabla['Aporte_Simulado']
-        datos_tabla['Base_Calculo'] = (datos_tabla['Saldo_Inicial'] +
+                saldos.append(saldo_
