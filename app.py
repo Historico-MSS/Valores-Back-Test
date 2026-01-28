@@ -157,7 +157,6 @@ if st.button("Generar Ilustración", type="primary"):
                 saldo_previo_tot = sum(c["saldo"] for c in cubetas if c["on"])
                 
                 for c in cubetas:
-                    # Activar cubeta
                     if not c["on"]:
                         if y == c["ini"][0] and m == c["ini"][1]:
                             c["on"] = True
@@ -167,23 +166,18 @@ if st.button("Generar Ilustración", type="primary"):
                             saldo_previo_tot += c["monto"]
                             
                     if c["on"]:
-                        # Rendimiento
                         if c["edad"] > 0 and i > 0 and precios[i-1] > 0:
                             c["saldo"] *= (precios[i] / precios[i-1])
                             
-                        # Retiro Prorrateado
                         if ret_mes > 0 and saldo_previo_tot > 0:
                             peso = c["saldo"] / saldo_previo_tot
                             c["saldo"] = max(0, c["saldo"] - (ret_mes * peso))
                             
-                        # Costos
                         deduc = (c["monto"] * 0.016) / 12
                         if c["edad"] < 60: c["saldo"] -= deduc
                         else: c["saldo"] -= (c["saldo"] * (0.01/12))
-                        
                         c["saldo"] = max(0, c["saldo"])
                         
-                        # Rescate
                         if c["edad"] < 60:
                             pena = (60 - (c["edad"] + 1)) * deduc
                             vr_cubeta = max(0, c["saldo"] - pena)
@@ -208,111 +202,3 @@ if st.button("Generar Ilustración", type="primary"):
         else: # MSS
             df['Year'] = df['Date'].dt.year
             pagos_anio = 12 / step_meses
-            ap_anual = monto_ini * pagos_anio
-            f1, f2 = FACTORES_COSTOS.get(plazo, (0,0))
-            costo_tot = (ap_anual * f1) + (ap_anual * f2)
-            meses_tot = plazo * 12
-            deduc_mensual = costo_tot / meses_tot
-            
-            l_vn, l_vr, l_ap, l_ret = [], [], [], []
-            saldo, acum_ap = 0, 0
-            precios = df['Price'].values
-            
-            for i in range(len(df)):
-                dt = df['Date'].iloc[i]
-                if i >= meses_tot: break
-                
-                ap_mes = monto_ini if i % step_meses == 0 else 0
-                l_ap.append(ap_mes)
-                saldo += ap_mes
-                acum_ap += ap_mes
-                
-                if i > 0 and precios[i-1] > 0:
-                    saldo *= (precios[i] / precios[i-1])
-                    
-                ret_mes = sum(r['monto'] for r in retiros_prog if r['anio']==dt.year and r['mes']==dt.month)
-                l_ret.append(ret_mes)
-                if ret_mes > 0: saldo = max(0, saldo - ret_mes)
-                
-                saldo -= deduc_mensual
-                l_vn.append(saldo)
-                
-                rest = meses_tot - (i + 1)
-                pena = rest * deduc_mensual if rest > 0 else 0
-                l_vr.append(max(0, saldo - pena))
-                
-            df = df.iloc[:len(l_vn)].copy()
-            df['Aporte_Sim'] = l_ap
-            df['Retiro_Sim'] = l_ret
-            df['Ap_Acum'] = df['Aporte_Sim'].cumsum()
-            df['VN_Sim'] = l_vn
-            df['VR_Sim'] = l_vr
-
-        # --- DATOS FINALES ---
-        status.info("⏳ Generando reporte...")
-        res = df.groupby('Year').agg({
-            'Aporte_Sim': 'sum', 'Retiro_Sim': 'sum', 
-            'VN_Sim': 'last', 'VR_Sim': 'last', 'Ap_Acum': 'last'
-        }).reset_index()
-        
-        res['Saldo_Ini'] = res['VN_Sim'].shift(1).fillna(0)
-        res['Ganancia'] = res['VN_Sim'] - res['Saldo_Ini'] - res['Aporte_Sim'] + res['Retiro_Sim']
-        res['Base'] = (res['Saldo_Ini'] + res['Aporte_Sim']).replace(0, 1)
-        res['Rend'] = (res['Ganancia'] / res['Base']) * 100
-
-        # --- GRAFICO Y PDF ---
-        fig = plt.figure(figsize=(11, 14))
-        plt.suptitle(f'Plan: {plan_sel}\nCliente: {nombre_cliente}', fontsize=18, weight='bold', y=0.98)
-        
-        sub = f"Estrategia Escalonada ({1+len(aportes_extra)} Aportes)" if plan_sel.startswith("MIS") else f"Aporte {freq_pago}: ${monto_ini:,.0f}"
-        plt.figtext(0.5, 0.925, sub, ha="center", fontsize=14, color='#555')
-        
-        tot_inv = res['Ap_Acum'].iloc[-1]
-        fin_vn = res['VN_Sim'].iloc[-1]
-        fin_vr = res['VR_Sim'].iloc[-1]
-        tot_ret = res['Retiro_Sim'].sum()
-        
-        txt_res = f"Inv. Total: ${tot_inv:,.0f} | Retiros: ${tot_ret:,.0f} | Valor Cuenta: ${fin_vn:,.0f}" if tot_ret > 0 else f"Inversión: ${tot_inv:,.0f} | Valor Cuenta: ${fin_vn:,.0f} | Valor Rescate: ${fin_vr:,.0f}"
-        plt.figtext(0.5, 0.88, txt_res, ha="center", fontsize=11, weight='bold', bbox=dict(facecolor='#f0f8ff', edgecolor='blue'))
-
-        ax = plt.subplot2grid((10, 1), (1, 0), rowspan=4)
-        ax.plot(df['Date'], df['VN_Sim'], color='#004c99', lw=2, label="Valor Cuenta")
-        if df['VR_Sim'].iloc[-1] < df['VN_Sim'].iloc[-1]*0.99:
-            ax.plot(df['Date'], df['VR_Sim'], color='#d62728', lw=1.5, ls=':', label="Valor Rescate")
-        ax.plot(df['Date'], df['Ap_Acum'], color='gray', ls='--', label="Capital Invertido", alpha=0.6)
-        ax.legend(); ax.grid(True, alpha=0.3)
-        ax.yaxis.set_major_formatter(ticker.StrMethodFormatter('${x:,.0f}'))
-
-        ax_t = plt.subplot2grid((10, 1), (6, 0), rowspan=4); ax_t.axis('off')
-        rows = [['Año', 'Aporte Total', 'Retiro', 'Valor Cuenta', 'Valor Rescate', '% Rend']]
-        for _, r in res.iterrows():
-            rt = f"${r['Retiro_Sim']:,.0f}" if r['Retiro_Sim'] > 0 else "-"
-            rows.append([
-                str(int(r['Year'])), f"${r['Ap_Acum']:,.0f}", rt,
-                f"${r['VN_Sim']:,.0f}", f"${r['VR_Sim']:,.0f}", f"{r['Rend']:+.1f}%"
-            ])
-            
-        tbl = ax_t.table(cellText=rows, loc='center', cellLoc='center')
-        tbl.scale(1, 1.35); tbl.auto_set_font_size(False); tbl.set_fontsize(8)
-        
-        for (r, c), cell in tbl.get_celld().items():
-            if r==0: cell.set_facecolor('#40466e'); cell.set_text_props(color='white', weight='bold')
-            elif r%2==0: cell.set_facecolor('#f2f2f2')
-            if c==5 and r>0: cell.set_text_props(color='green' if '+' in cell.get_text().get_text() else 'black', weight='bold')
-            if c==2 and r>0 and cell.get_text().get_text() != "-": cell.set_text_props(color='#d62728', weight='bold')
-            if c==4 and r>0:
-                v_res = float(cell.get_text().get_text().replace('$','').replace(',',''))
-                v_cta = float(rows[r][3].replace('$','').replace(',',''))
-                if v_res < v_cta*0.95: cell.set_text_props(color='#d62728')
-
-        plt.tight_layout(rect=[0, 0.03, 1, 0.86])
-        st.pyplot(fig)
-        
-        img = io.BytesIO()
-        plt.savefig(img, format='pdf')
-        img.seek(0)
-        st.download_button("📥 Descargar PDF", img, f"Ilustracion_{nombre_cliente}.pdf", "application/pdf")
-        status.success("✅ ¡Listo!")
-
-    except Exception as e:
-        status.error("❌ Error"); st.error(e); st.write(traceback.format_exc())
