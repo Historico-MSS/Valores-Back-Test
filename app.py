@@ -9,7 +9,7 @@ import os
 import traceback
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Generador de Ilustraciones", page_icon="💼")
+st.set_page_config(page_title="Generador de Ilustraciones (v2.0)", page_icon="💼")
 
 def check_password():
     def password_entered():
@@ -161,17 +161,4 @@ if st.button("Generar Ilustración", type="primary"):
                         if y == c["ini"][0] and m == c["ini"][1]:
                             c["on"] = True
                             c["saldo"] = c["monto"]
-                            ap_mes += c["monto"]
-                            acum_aportado += c["monto"]
-                            saldo_previo_tot += c["monto"]
-                            
-                    if c["on"]:
-                        if c["edad"] > 0 and i > 0 and precios[i-1] > 0:
-                            c["saldo"] *= (precios[i] / precios[i-1])
-                            
-                        if ret_mes > 0 and saldo_previo_tot > 0:
-                            peso = c["saldo"] / saldo_previo_tot
-                            c["saldo"] = max(0, c["saldo"] - (ret_mes * peso))
-                            
-                        deduc = (c["monto"] * 0.016) / 12
-                        if c["edad"] < 60: c["saldo"] -=
+                            ap_mes += c["
