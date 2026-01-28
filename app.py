@@ -56,7 +56,7 @@ FACTORES_COSTOS = {
 # 🚀 APLICACIÓN PRINCIPAL
 # =========================================================
 
-st.title("💼 Generador de Ilustraciones (Aportes Múltiples)")
+st.title("💼 Generador de Ilustraciones - Valores Históricos - (Aportes Múltiples)")
 
 # --- DETECTIVE DE ARCHIVOS ---
 all_files = os.listdir()
