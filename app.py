@@ -9,7 +9,7 @@ import os
 import traceback
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Generador de Ilustraciones", page_icon="💰")
+st.set_page_config(page_title="Generador de Ilustraciones", page_icon="💼")
 
 # --- 🔐 SISTEMA DE CONTRASEÑA ---
 def check_password():
@@ -90,7 +90,7 @@ with st.sidebar:
     archivo_csv, plazo_anios = planes[plan_seleccionado]
     
     # --- INPUTS DINÁMICOS ---
-    aportes_extra_mis = [] # Lista para guardar los aportes adicionales
+    aportes_extra_mis = [] 
     
     if plan_seleccionado == "MIS - Aporte Unico":
         st.info("Plan de Inversión (Aporte Único + Extras)")
@@ -104,13 +104,13 @@ with st.sidebar:
         with col2: 
             mes_inicio = st.selectbox("Mes Inicio", range(1, 13))
             
-        # --- APORTES ADICIONALES (EXPANDER) ---
-        with st.expander("➕ Agregar Aportes Adicionales (Opcional)"):
+        # --- APORTES ADICIONALES ---
+        with st.expander("➕ Agregar Aportes Adicionales"):
             st.markdown("Programa inyecciones de capital futuras.")
             activar_extras = st.checkbox("Habilitar aportes extra")
             
             if activar_extras:
-                for i in range(4): # Hasta 4 aportes extra
+                for i in range(4): 
                     st.markdown(f"**Aporte Adicional #{i+1}**")
                     c_monto, c_anio, c_mes = st.columns([2, 1.5, 1])
                     with c_monto:
@@ -131,7 +131,6 @@ with st.sidebar:
         st.info("Plan de Ahorro Regular")
         monto_input = st.number_input("Monto del Aporte (USD)", value=500, step=50)
         
-        # SELECTOR DE FRECUENCIA
         frecuencia_pago = st.selectbox("Frecuencia de Aporte", ["Mensual", "Trimestral", "Semestral", "Anual"])
         mapa_meses = {"Mensual": 1, "Trimestral": 3, "Semestral": 6, "Anual": 12}
         step_meses = mapa_meses[frecuencia_pago]
@@ -165,9 +164,7 @@ if st.button("Generar Ilustración", type="primary"):
 
         # 2. SIMULACIÓN
         if plan_seleccionado == "MIS - Aporte Unico":
-            # --- MIS (SISTEMA DE CUBETAS INDEPENDIENTES) ---
-            
-            # Filtramos desde la fecha del PRIMER aporte
+            # --- MIS (SISTEMA DE CUBETAS) ---
             fecha_filtro = pd.Timestamp(year=anio_inicio, month=mes_inicio, day=1)
             df = df[df['Date'] >= fecha_filtro].copy().reset_index(drop=True)
             
@@ -177,23 +174,19 @@ if st.button("Generar Ilustración", type="primary"):
             
             df['Year'] = df['Date'].dt.year
             
-            # Listas finales para el DataFrame
             total_valor_neto = []
             total_valor_rescate = []
-            total_aportes_acumulados = [] # Para el gráfico de línea
-            flujo_aportes = [] # Para la tabla (lo que entra ese mes)
+            total_aportes_acumulados = [] 
+            flujo_aportes = [] 
             
-            # Preparamos las "Cubetas" (Buckets)
-            # Cubeta 0: El aporte inicial
             cubetas = [{
                 "monto_original": monto_input,
-                "saldo_actual": 0, # Se inicializa cuando entremos en su fecha
+                "saldo_actual": 0, 
                 "meses_activa": 0,
                 "activa": False,
                 "fecha_inicio": (anio_inicio, mes_inicio)
             }]
             
-            # Agregamos cubetas extra si las hay
             for extra in aportes_extra_mis:
                 cubetas.append({
                     "monto_original": extra["monto"],
@@ -206,7 +199,6 @@ if st.button("Generar Ilustración", type="primary"):
             precios = df['Price'].values
             acumulado_aportado = 0
             
-            # --- BUCLE DE TIEMPO (MES A MES) ---
             for i in range(len(df)):
                 fecha_actual = df['Date'].iloc[i]
                 mes_actual = fecha_actual.month
@@ -216,9 +208,7 @@ if st.button("Generar Ilustración", type="primary"):
                 valor_cuenta_mes_total = 0
                 valor_rescate_mes_total = 0
                 
-                # Procesamos cada Cubeta individualmente
                 for cubeta in cubetas:
-                    # 1. ¿Toca activar esta cubeta? (Coincide fecha)
                     if not cubeta["activa"]:
                         if anio_actual == cubeta["fecha_inicio"][0] and mes_actual == cubeta["fecha_inicio"][1]:
                             cubeta["activa"] = True
@@ -227,23 +217,17 @@ if st.button("Generar Ilustración", type="primary"):
                             acumulado_aportado += cubeta["monto_original"]
                     
                     if cubeta["activa"]:
-                        # 2. Rendimiento Mercado (Si no es el primer mes de vida de la cubeta)
-                        # Ojo: Si acabamos de activarla, no aplicamos rendimiento del mes anterior sobre el aporte nuevo
                         if cubeta["meses_activa"] > 0 and i > 0 and precios[i-1] > 0:
                             rendimiento = precios[i] / precios[i-1]
                             cubeta["saldo_actual"] *= rendimiento
                         
-                        # 3. Deducciones (Específicas de esta cubeta)
                         deduccion_establecimiento = (cubeta["monto_original"] * 0.016) / 12
                         
                         if cubeta["meses_activa"] < 60:
-                            # Primeros 5 años: Costo fijo Estructura
                             cubeta["saldo_actual"] -= deduccion_establecimiento
                         else:
-                            # Después: Costo Admin 1% sobre saldo
                             cubeta["saldo_actual"] -= (cubeta["saldo_actual"] * (0.01/12))
                         
-                        # 4. Cálculo Rescate (Específico de esta cubeta)
                         if cubeta["meses_activa"] < 60:
                             meses_restantes = 60 - (cubeta["meses_activa"] + 1)
                             penalizacion = meses_restantes * deduccion_establecimiento
@@ -251,22 +235,17 @@ if st.button("Generar Ilustración", type="primary"):
                         else:
                             valor_rescate_cubeta = cubeta["saldo_actual"]
                             
-                        # Sumar al total del cliente
                         valor_cuenta_mes_total += cubeta["saldo_actual"]
                         valor_rescate_mes_total += valor_rescate_cubeta
-                        
-                        # Avanzar contador de edad de la cubeta
                         cubeta["meses_activa"] += 1
 
-                # Guardamos los totales del mes
                 flujo_aportes.append(aporte_del_mes_total)
                 total_aportes_acumulados.append(acumulado_aportado)
                 total_valor_neto.append(valor_cuenta_mes_total)
                 total_valor_rescate.append(valor_rescate_mes_total)
             
-            # Asignamos al DF
             df['Aporte_Simulado'] = flujo_aportes
-            df['Aporte_Acumulado_Total'] = total_aportes_acumulados # Columna auxiliar
+            df['Aporte_Acumulado_Total'] = total_aportes_acumulados 
             df['Valor_Neto_Simulado'] = total_valor_neto
             df['Valor_Rescate_Simulado'] = total_valor_rescate
 
@@ -317,19 +296,18 @@ if st.button("Generar Ilustración", type="primary"):
             df['Valor_Rescate_Simulado'] = rescates
 
         # 3. DATOS TABLA
-        status.info("⏳ Generando Informe Multi-Capa...")
+        status.info("⏳ Generando Informe...")
         
         datos_tabla = df.groupby('Year').agg({
             'Aporte_Simulado': 'sum', 
             'Valor_Neto_Simulado': 'last',
             'Valor_Rescate_Simulado': 'last',
-            'Aporte_Acumulado_Total': 'last' # Tomamos el último valor del año
+            'Aporte_Acumulado_Total': 'last'
         }).reset_index()
         
         # Rendimiento
         datos_tabla['Saldo_Inicial'] = datos_tabla['Valor_Neto_Simulado'].shift(1).fillna(0)
         datos_tabla['Ganancia'] = datos_tabla['Valor_Neto_Simulado'] - datos_tabla['Saldo_Inicial'] - datos_tabla['Aporte_Simulado']
-        
         datos_tabla['Base_Calculo'] = (datos_tabla['Saldo_Inicial'] + datos_tabla['Aporte_Simulado']).replace(0, 1)
         datos_tabla['Rendimiento'] = (datos_tabla['Ganancia'] / datos_tabla['Base_Calculo']) * 100
 
@@ -337,7 +315,6 @@ if st.button("Generar Ilustración", type="primary"):
         fig = plt.figure(figsize=(11, 14))
         plt.suptitle(f'Plan: {plan_seleccionado}\nCliente: {nombre_cliente}', fontsize=18, weight='bold', y=0.96)
         
-        # Subtitulo inteligente
         if plan_seleccionado == "MIS - Aporte Unico":
             num_aportes = 1 + len(aportes_extra_mis)
             sub_texto = f"Estrategia de Inversión Escalonada ({num_aportes} Aportes)"
@@ -372,14 +349,17 @@ if st.button("Generar Ilustración", type="primary"):
         ax_t = plt.subplot2grid((10, 1), (6, 0), rowspan=4)
         ax_t.axis('off')
         
-        rows = [['Año', 'Aporte Anual', 'Aporte Total', 'Valor Cuenta', 'Valor Rescate']]
+        # --- AQUÍ RECUPERAMOS LA COLUMNA DE RENDIMIENTO ---
+        rows = [['Año', 'Aporte Anual', 'Aporte Total', 'Valor Cuenta', 'Valor Rescate', '% Rend']]
+        
         for _, r in datos_tabla.iterrows():
             rows.append([
                 str(int(r['Year'])), 
-                f"${r['Aporte_Simulado']:,.0f}", # Lo que puso ese año
-                f"${r['Aporte_Acumulado_Total']:,.0f}", # Total histórico
+                f"${r['Aporte_Simulado']:,.0f}", 
+                f"${r['Aporte_Acumulado_Total']:,.0f}", 
                 f"${r['Valor_Neto_Simulado']:,.0f}", 
-                f"${r['Valor_Rescate_Simulado']:,.0f}"
+                f"${r['Valor_Rescate_Simulado']:,.0f}",
+                f"{r['Rendimiento']:+.1f}%" # <-- ¡AQUÍ ESTÁ!
             ])
         
         tbl = ax_t.table(cellText=rows, loc='center', cellLoc='center')
@@ -394,7 +374,13 @@ if st.button("Generar Ilustración", type="primary"):
             elif r % 2 == 0: 
                 cell.set_facecolor('#f2f2f2')
             
-            # Resaltar Rescate si hay penalización fuerte
+            # Colorear Rendimiento (Columna 5 ahora)
+            if c == 5 and r > 0:
+                txt = cell.get_text().get_text()
+                color = 'green' if '+' in txt else ('red' if '-' in txt else 'black')
+                cell.set_text_props(color=color, weight='bold')
+            
+            # Resaltar Rescate si hay penalización (Columna 4)
             if c == 4 and r > 0:
                 val_res = float(cell.get_text().get_text().replace('$','').replace(',',''))
                 val_cta = float(rows[r][3].replace('$','').replace(',',''))
