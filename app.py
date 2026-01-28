@@ -102,7 +102,6 @@ with st.sidebar:
         frecuencia_pago = "Único" 
         
         st.markdown("### 📅 Fecha de Inicio")
-        # Ajustamos columnas para que el mes se vea bien
         col1, col2 = st.columns([1.5, 1.5])
         with col1: 
             anio_inicio = st.number_input("Año Inicio", min_value=2000, max_value=2024, value=2015)
@@ -119,7 +118,6 @@ with st.sidebar:
                 for i in range(4): 
                     st.divider()
                     st.caption(f"Aporte Adicional #{i+1}")
-                    # Nuevas proporciones para que el mes no se corte
                     c_monto, c_anio, c_mes = st.columns([1.5, 1, 1.3])
                     
                     with c_monto:
@@ -147,7 +145,7 @@ with st.sidebar:
         
         anio_inicio, mes_inicio = None, None
 
-    # --- SECCIÓN DE RETIROS (ARREGLADA) ---
+    # --- SECCIÓN DE RETIROS ---
     with st.expander("💸 Programar Retiros Parciales"):
         st.markdown("Retiros de capital (Sin penalización).")
         activar_retiros = st.checkbox("Habilitar Retiros")
@@ -156,7 +154,6 @@ with st.sidebar:
             for i in range(3): 
                 st.divider()
                 st.caption(f"Retiro Programado #{i+1}")
-                # Proporciones más anchas para el mes
                 c_monto_r, c_anio_r, c_mes_r = st.columns([1.5, 1, 1.3])
                 
                 with c_monto_r:
@@ -350,58 +347,4 @@ if st.button("Generar Ilustración", type="primary"):
                 saldo_act += monto_del_mes
                 acumulado_aportado += monto_del_mes
                 
-                if i > 0 and precios[i-1] > 0:
-                    saldo_act *= (precios[i] / precios[i-1])
-                
-                # RETIRO
-                retiro_del_mes = 0
-                for r in retiros_programados:
-                    if r['anio'] == anio_actual and r['mes'] == mes_actual:
-                        retiro_del_mes += r['monto']
-                
-                flujo_retiros.append(retiro_del_mes)
-                
-                if retiro_del_mes > 0:
-                    saldo_act = max(0, saldo_act - retiro_del_mes)
-
-                saldo_act -= deduccion_mensual
-                saldos.append(saldo_act)
-                
-                meses_restantes = meses_totales - (i + 1)
-                penalizacion = meses_restantes * deduccion_mensual if meses_restantes > 0 else 0
-                valor_rescate = max(0, saldo_act - penalizacion)
-                rescates.append(valor_rescate)
-            
-            df = df.iloc[:len(saldos)].copy()
-            df['Aporte_Simulado'] = aportes_sim
-            df['Retiro_Simulado'] = flujo_retiros
-            df['Aporte_Acumulado_Total'] = df['Aporte_Simulado'].cumsum()
-            df['Valor_Neto_Simulado'] = saldos
-            df['Valor_Rescate_Simulado'] = rescates
-
-        # 3. DATOS TABLA
-        status.info("⏳ Generando Informe...")
-        
-        datos_tabla = df.groupby('Year').agg({
-            'Aporte_Simulado': 'sum', 
-            'Retiro_Simulado': 'sum',
-            'Valor_Neto_Simulado': 'last',
-            'Valor_Rescate_Simulado': 'last',
-            'Aporte_Acumulado_Total': 'last'
-        }).reset_index()
-        
-        # Rendimiento
-        datos_tabla['Saldo_Inicial'] = datos_tabla['Valor_Neto_Simulado'].shift(1).fillna(0)
-        datos_tabla['Ganancia'] = datos_tabla['Valor_Neto_Simulado'] - datos_tabla['Saldo_Inicial'] - datos_tabla['Aporte_Simulado'] + datos_tabla['Retiro_Simulado']
-        
-        datos_tabla['Base_Calculo'] = (datos_tabla['Saldo_Inicial'] + datos_tabla['Aporte_Simulado']).replace(0, 1)
-        datos_tabla['Rendimiento'] = (datos_tabla['Ganancia'] / datos_tabla['Base_Calculo']) * 100
-
-        # 4. GRAFICAR
-        fig = plt.figure(figsize=(11, 14))
-        
-        plt.suptitle(f'Plan: {plan_seleccionado}\nCliente: {nombre_cliente}', fontsize=18, weight='bold', y=0.98) 
-        
-        if plan_seleccionado == "MIS - Aporte Unico":
-            num_aportes = 1 + len(aportes_extra_mis)
-            sub_
+                if i > 0 and precios[i-1]
