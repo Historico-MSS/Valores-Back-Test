@@ -8,8 +8,8 @@ import io
 import os 
 import traceback
 
-# --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Generador v10", page_icon="💼")
+# --- CONFIG ---
+st.set_page_config(page_title="Generador v11", page_icon="💼")
 
 def check_password():
     def password_entered():
@@ -18,10 +18,7 @@ def check_password():
             del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
-
-    if st.session_state.get("password_correct", False):
-        return True
-
+    if st.session_state.get("password_correct", False): return True
     st.title("🔒 Acceso Restringido")
     st.text_input("Contraseña:", type="password", on_change=password_entered, key="password")
     return False
@@ -45,6 +42,8 @@ with st.sidebar:
     st.header("Configuración")
     cliente = st.text_input("Cliente", "Cliente Ejemplo")
     planes = {}
+    
+    # Detector de Archivos
     for i in range(5, 21):
         for f in files:
             if "MSS" in f and str(i) in f:
@@ -53,4 +52,15 @@ with st.sidebar:
     for f in files:
         if "nico" in f.lower() or "unique" in f.lower(): planes["MIS - Aporte Unico"] = (f, 0)
     
-    if
+    if not planes: st.error("No hay CSVs"); st.stop()
+    
+    sel = st.selectbox("Plan", list(planes.keys()))
+    csv, plazo = planes[sel]
+    
+    extras, retiros = [], []
+    
+    if sel == "MIS - Aporte Unico":
+        st.info("Plan Inversión")
+        monto = st.number_input("Inversión (USD)", 10000, step=1000)
+        freq = "Único"
+        c1, c2 = st.columns([1.5, 1.5
