@@ -93,32 +93,4 @@ with st.sidebar:
         monto_input = st.number_input("Inversión Única", value=10000, step=1000)
         col1, col2 = st.columns(2)
         with col1: anio_inicio = st.number_input("Año Inicio", 2000, 2024, 2015)
-        with col2: mes_inicio = st.selectbox("Mes Inicio", range(1, 13))
-    else:
-        monto_input = st.number_input("Aporte Mensual", value=500, step=50)
-        anio_inicio, mes_inicio = None, None
-
-# --- BOTÓN DE ACCIÓN ---
-if st.button("Generar Ilustración", type="primary"):
-    status = st.empty()
-    
-    try:
-        status.info("⏳ Calculando Penalizaciones y Rescates...")
-        
-        # 1. CARGA
-        df = pd.read_csv(archivo_csv)
-        df.columns = df.columns.str.strip()
-        
-        def limpiar(x):
-            return x.astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False).str.strip()
-            
-        for col in ['Aporte', 'Valor Neto', 'Price']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(limpiar(df[col]), errors='coerce').fillna(0)
-
-        if 'Date' not in df.columns:
-            st.error("El archivo no tiene columna 'Date'")
-            st.stop()
-            
-        df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
-        df = df.dropna(subset=['Date']).sort_values('
+        with col2: mes_inicio = st.selectbox("Mes
