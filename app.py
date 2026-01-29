@@ -9,7 +9,7 @@ import os
 import traceback
 
 # --- CONFIG ---
-st.set_page_config(page_title="Generador v11", page_icon="💼")
+st.set_page_config(page_title="Generador v12", page_icon="💼")
 
 def check_password():
     def password_entered():
@@ -43,7 +43,6 @@ with st.sidebar:
     cliente = st.text_input("Cliente", "Cliente Ejemplo")
     planes = {}
     
-    # Detector de Archivos
     for i in range(5, 21):
         for f in files:
             if "MSS" in f and str(i) in f:
@@ -61,7 +60,8 @@ with st.sidebar:
     
     if sel == "MIS - Aporte Unico":
         st.info("Plan Inversión")
-        monto = st.number_input("Inversión (USD)", 10000, step=1000)
+        # MIS sigue con su logica normal de montos
+        monto = st.number_input("Inversión (USD)", min_value=1000, value=10000, step=1000)
         freq = "Único"
         c1, c2 = st.columns([1.5, 1.5])
         with c1: y_ini = st.number_input("Año Inicio", 2000, 2024, 2015)
@@ -78,7 +78,8 @@ with st.sidebar:
                     if m_x > 0: extras.append({"m":m_x, "y":y_x, "mo":m_x_idx})
     else:
         st.info("Plan Ahorro")
-        monto = st.number_input("Aporte (USD)", 500, step=50)
+        # AQUI ESTA EL CAMBIO: min_value=150
+        monto = st.number_input("Aporte (USD)", min_value=150, value=500, step=50)
         freq = st.selectbox("Frecuencia", ["Mensual", "Trimestral", "Semestral", "Anual"])
         step = {"Mensual":1, "Trimestral":3, "Semestral":6, "Anual":12}[freq]
         y_ini, m_ini = None, None
@@ -115,7 +116,6 @@ if st.button("Generar Ilustración", type="primary"):
             df['Year'] = df['Date'].dt.year
             l_vn, l_vr, l_ap_ac, l_ret = [], [], [], []
             
-            # buckets: m=monto, s=saldo, e=edad, on=activo, ini=(año,mes)
             buckets = [{"m":monto, "s":0, "e":0, "on":False, "ini":(y_ini,m_ini)}]
             for x in extras: buckets.append({"m":x["m"], "s":0, "e":0, "on":False, "ini":(x["y"],x["mo"])})
             
@@ -217,39 +217,4 @@ if st.button("Generar Ilustración", type="primary"):
 
         ax = plt.subplot2grid((10, 1), (1, 0), rowspan=4)
         ax.plot(df['Date'], df['Ap_Acum'], color='#2ca02c', ls='--', label="Capital Invertido", alpha=0.9, lw=2)
-        ax.plot(df['Date'], df['VR'], color='#808080', ls='--', label="Valor Rescate", alpha=0.9, lw=2)
-        ax.plot(df['Date'], df['VN'], color='#004c99', lw=2.5, label="Valor Cuenta")
-        ax.legend(); ax.grid(True, alpha=0.3); ax.yaxis.set_major_formatter(ticker.StrMethodFormatter('${x:,.0f}'))
-
-        # --- TABLA ---
-        ax_t = plt.subplot2grid((10, 1), (6, 0), rowspan=4); ax_t.axis('off')
-        rows = [['Año', 'Aporte Total', 'Retiro', 'Valor Cuenta', 'Valor Rescate', '% Rend']]
-        for _, r in res.iterrows():
-            rt = f"${r['Retiro']:,.0f}" if r['Retiro'] > 0 else "-"
-            rows.append([
-                str(int(r['Year'])), f"${r['Ap_Acum']:,.0f}", rt,
-                f"${r['VN']:,.0f}", f"${r['VR']:,.0f}", f"{r['Rend']:+.1f}%"
-            ])
-            
-        tbl = ax_t.table(cellText=rows, loc='center', cellLoc='center')
-        tbl.scale(1, 1.35); tbl.auto_set_font_size(False); tbl.set_fontsize(8)
-        
-        for (r, c), cell in tbl.get_celld().items():
-            if r==0: cell.set_facecolor('#40466e'); cell.set_text_props(color='white', weight='bold')
-            elif r%2==0: cell.set_facecolor('#f2f2f2')
-            if c==5 and r>0: cell.set_text_props(color='green' if '+' in cell.get_text().get_text() else 'black', weight='bold')
-            if c==2 and r>0 and cell.get_text().get_text() != "-": cell.set_text_props(color='#d62728', weight='bold')
-            if c==4 and r>0:
-                v_res = float(cell.get_text().get_text().replace('$','').replace(',',''))
-                v_cta = float(rows[r][3].replace('$','').replace(',',''))
-                if v_res < v_cta*0.95: cell.set_text_props(color='#d62728')
-
-        plt.tight_layout(rect=[0, 0.03, 1, 0.86])
-        st.pyplot(fig)
-        
-        img = io.BytesIO(); plt.savefig(img, format='pdf'); img.seek(0)
-        st.download_button("📥 Descargar PDF", img, f"Ilustracion_{cliente}.pdf", "application/pdf")
-        st.success("✅ ¡Listo!")
-
-    except Exception as e:
-        st.error("❌ Error"); st.write(traceback.format_exc())
+        ax.plot(df['Date'], df['VR'], color='#808080', ls='--', label="Valor Rescate", alpha=0.
