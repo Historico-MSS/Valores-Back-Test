@@ -8,7 +8,8 @@ import io
 import os 
 import traceback
 
-st.set_page_config(page_title="Generador v13", page_icon="💼")
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="Generador v14", page_icon="💼")
 
 def check_pass():
     def pass_entered():
@@ -72,7 +73,7 @@ with st.sidebar:
                     if m_x > 0: extras.append({"m":m_x, "y":y_x, "mo":m_x_idx})
     else:
         st.info("Plan Ahorro")
-        # MINIMO 150 AQUI
+        # MINIMO 150
         monto = st.number_input("Aporte (USD)", min_value=150, value=500, step=50)
         freq = st.selectbox("Frecuencia", ["Mensual", "Trimestral", "Semestral", "Anual"])
         step = {"Mensual":1, "Trimestral":3, "Semestral":6, "Anual":12}[freq]
@@ -96,33 +97,4 @@ if st.button("Generar Ilustración", type="primary"):
         df.columns = df.columns.str.strip()
         def cln(x): return x.astype(str).str.replace('$','',regex=False).str.replace(',','',regex=False).str.strip()
         for c in ['Aporte','Valor Neto','Price']: 
-            if c in df.columns: df[c] = pd.to_numeric(cln(df[c]), errors='coerce').fillna(0)
-        df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
-        df = df.dropna(subset=['Date']).sort_values('Date')
-        
-        # --- CÁLCULO ---
-        if sel == "MIS - Aporte Unico":
-            filt = pd.Timestamp(year=y_ini, month=m_ini, day=1)
-            df = df[df['Date']>=filt].reset_index(drop=True)
-            if df.empty: st.error("Fecha sin datos"); st.stop()
-            
-            df['Year'] = df['Date'].dt.year
-            l_vn, l_vr, l_ap_ac, l_ret = [], [], [], []
-            
-            buckets = [{"m":monto, "s":0, "e":0, "on":False, "ini":(y_ini,m_ini)}]
-            for x in extras: buckets.append({"m":x["m"], "s":0, "e":0, "on":False, "ini":(x["y"],x["mo"])})
-            
-            prices = df['Price'].values
-            acum_ap = 0
-            
-            for i in range(len(df)):
-                curr = df['Date'].iloc[i]; cy, cm = curr.year, curr.month
-                
-                r_mes = sum(r["m"] for r in retiros if r["y"]==cy and r["mo"]==cm)
-                l_ret.append(r_mes)
-                
-                stot_prev = sum(b["s"] for b in buckets if b["on"])
-                vn_mes, vr_mes = 0, 0
-                
-                for b in buckets:
-                    if not b["on"] and cy==
+            if
