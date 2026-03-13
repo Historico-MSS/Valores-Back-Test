@@ -61,6 +61,9 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 # Stooq diario -> luego convertimos a mensual real
 STOOQ_DAILY_URL = "https://stooq.com/q/d/l/?s=%5Espx&i=d"
 
+# AMC anual del tracker
+AMC_ANUAL = 0.02
+
 
 # --- UTILIDADES ---
 def mes_numero(nombre_mes: str) -> int:
@@ -103,6 +106,25 @@ def descargar_sp500_mensual() -> pd.DataFrame:
     return df
 
 
+def agregar_rendimiento_neto_tracker(df: pd.DataFrame, amc_anual: float = AMC_ANUAL) -> pd.DataFrame:
+    """
+    Convierte la serie mensual de precios del S&P 500 en una serie mensual neta,
+    descontando un AMC anual prorrateado mensualmente y capitalizado de forma compuesta.
+    """
+    df = df.copy().sort_values("Date").reset_index(drop=True)
+
+    # Retorno bruto mensual del índice
+    df["Retorno_Bruto"] = df["Price"].pct_change().fillna(0.0)
+
+    # Factor mensual equivalente del AMC anual
+    factor_fee_mensual = (1 - amc_anual) ** (1 / 12)
+
+    # Retorno neto mensual del tracker simulado
+    df["Retorno_Neto"] = ((1 + df["Retorno_Bruto"]) * factor_fee_mensual) - 1
+
+    return df
+
+
 def cargar_serie_mercado(forzar_actualizacion: bool = False):
     cache_file = os.path.join(CACHE_DIR, "sp500_stooq_monthly.csv")
     origen = "cache local"
@@ -112,7 +134,6 @@ def cargar_serie_mercado(forzar_actualizacion: bool = False):
             df = descargar_sp500_mensual()
             df.to_csv(cache_file, index=False)
             origen = "descarga online"
-            return df, origen
         except Exception:
             if not os.path.exists(cache_file):
                 raise
@@ -123,6 +144,7 @@ def cargar_serie_mercado(forzar_actualizacion: bool = False):
     df["Price"] = pd.to_numeric(df["Price"], errors="coerce")
     df = df.dropna(subset=["Date", "Price"]).sort_values("Date").reset_index(drop=True)
 
+    df = agregar_rendimiento_neto_tracker(df, amc_anual=AMC_ANUAL)
     return df, origen
 
 
@@ -179,7 +201,7 @@ def simular_mis(
         raise ValueError("No hay datos históricos disponibles desde la fecha seleccionada.")
 
     df["Year"] = df["Date"].dt.year
-    precios = df["Price"].values
+    retornos_netos = df["Retorno_Neto"].values
 
     cubetas = [{
         "monto": float(monto_inicial),
@@ -227,9 +249,9 @@ def simular_mis(
                 saldo_total_previo += c["monto"]
 
             if c["activa"]:
-                if c["edad"] > 0 and i > 0 and precios[i - 1] > 0:
-                    rendimiento = precios[i] / precios[i - 1]
-                    c["saldo"] *= rendimiento
+                # Interés compuesto mensual usando retorno neto del tracker
+                if c["edad"] > 0:
+                    c["saldo"] *= (1 + retornos_netos[i])
 
                 if retiro_mes > 0 and saldo_total_previo > 0:
                     peso = c["saldo"] / saldo_total_previo if saldo_total_previo > 0 else 0
@@ -284,7 +306,7 @@ def simular_mss(
         raise ValueError("No hay datos históricos disponibles desde la fecha seleccionada.")
 
     df["Year"] = df["Date"].dt.year
-    precios = df["Price"].values
+    retornos_netos = df["Retorno_Neto"].values
 
     mapa_pasos = {"Mensual": 1, "Trimestral": 3, "Semestral": 6, "Anual": 12}
     step_meses = mapa_pasos[frecuencia_pago]
@@ -308,9 +330,9 @@ def simular_mss(
             saldo_actual += monto_aporte
             aporte_acumulado += monto_aporte
 
-        if i > 0 and precios[i - 1] > 0:
-            rendimiento = precios[i] / precios[i - 1]
-            saldo_actual *= rendimiento
+        # Interés compuesto mensual usando retorno neto del tracker
+        if i > 0:
+            saldo_actual *= (1 + retornos_netos[i])
 
         retiro_mes = 0.0
         for r in retiros_programados:
@@ -336,7 +358,7 @@ def simular_mss(
 
         lista_vn.append(saldo_actual)
         lista_vr.append(valor_rescate)
-        lista_aportes_acum.append(aporte_acumulado)  # queda plano tras terminar aportes
+        lista_aportes_acum.append(aporte_acumulado)
         lista_etapa.append(etapa)
 
     df["Aporte_Acum"] = lista_aportes_acum
@@ -429,7 +451,7 @@ def crear_figura_principal(df: pd.DataFrame, resumen: pd.DataFrame, seleccion: s
 
     fig.text(
         0.5, 0.895,
-        "Fuente: S&P 500 (^SPX) mensual - Stooq",
+        "Base de cálculo: S&P 500 mensual real con AMC 2.0% anual prorrateado mensualmente",
         ha="center", va="top",
         fontsize=10.5, color="#666666"
     )
@@ -672,7 +694,7 @@ def generar_pdf_completo(fig_principal, tabla_export: pd.DataFrame, nombre_clien
 
 # --- CARGA DE MERCADO ---
 st.sidebar.header("Serie de mercado")
-st.sidebar.caption("Fuente única: Stooq ^SPX mensual real")
+st.sidebar.caption("Base única neta: S&P 500 mensual real con AMC 2.0% anual")
 forzar_actualizacion = st.sidebar.button("🔄 Actualizar base ahora")
 
 try:
@@ -692,7 +714,7 @@ planes_disponibles = detectar_planes_csv()
 
 # --- UI PRINCIPAL ---
 st.title("💼 Generador de Ilustraciones Financieras")
-st.caption("Usando S&P 500 (^SPX) mensual real para rendimiento compuesto.")
+st.caption("Usando una base neta mensual con AMC 2.0% anual prorrateado mensualmente y rendimiento compuesto.")
 st.info("Disclaimer: esta herramienta es únicamente ilustrativa. No constituye una proyección garantizada, una oferta, ni asesoría financiera, legal o fiscal.")
 
 with st.sidebar:
