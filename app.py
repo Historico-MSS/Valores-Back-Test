@@ -75,6 +75,119 @@ def fmt_pct(x):
     return f"{x:+.2f}%"
 
 
+def xnpv(rate, cashflows):
+    total = 0.0
+    t0 = cashflows[0][0]
+    for fecha, monto in cashflows:
+        dias = (fecha - t0).days
+        total += monto / ((1 + rate) ** (dias / 365.25))
+    return total
+
+
+def xirr(cashflows, guess=0.08):
+    """
+    cashflows: lista de tuplas (fecha, monto)
+    aportes = negativos
+    retiros / valor final = positivos
+    """
+    if not cashflows or len(cashflows) < 2:
+        return None
+
+    positivos = any(m > 0 for _, m in cashflows)
+    negativos = any(m < 0 for _, m in cashflows)
+
+    if not positivos or not negativos:
+        return None
+
+    low, high = -0.9999, 10.0
+
+    try:
+        npv_low = xnpv(low, cashflows)
+        npv_high = xnpv(high, cashflows)
+    except Exception:
+        return None
+
+    intentos = 0
+    while npv_low * npv_high > 0 and intentos < 50:
+        high *= 2
+        try:
+            npv_high = xnpv(high, cashflows)
+        except Exception:
+            return None
+        intentos += 1
+
+    if npv_low * npv_high > 0:
+        return None
+
+    for _ in range(200):
+        mid = (low + high) / 2
+        npv_mid = xnpv(mid, cashflows)
+
+        if abs(npv_mid) < 1e-7:
+            return mid
+
+        if npv_low * npv_mid < 0:
+            high = mid
+            npv_high = npv_mid
+        else:
+            low = mid
+            npv_low = npv_mid
+
+    return (low + high) / 2
+
+
+def calcular_rendimiento_resumen(df: pd.DataFrame, resumen: pd.DataFrame, tipo_plan: str):
+    """
+    MIS  -> rendimiento anual promedio
+    MSS  -> rendimiento anual equivalente del plan (XIRR)
+    """
+    if resumen.empty or df.empty:
+        return "Rendimiento anual", 0.0
+
+    val_final = float(resumen["Valor_Cuenta"].iloc[-1])
+
+    if tipo_plan == "MIS":
+        inv_total = float(resumen["Aporte_Acum"].iloc[-1])
+
+        if inv_total <= 0 or val_final <= 0 or len(df) < 2:
+            return "Rendimiento anual promedio", 0.0
+
+        años = (df["Date"].iloc[-1] - df["Date"].iloc[0]).days / 365.25
+        if años <= 0:
+            return "Rendimiento anual promedio", 0.0
+
+        tasa = ((val_final / inv_total) ** (1 / años) - 1) * 100
+        return "Rendimiento anual promedio", tasa
+
+    # MSS -> XIRR
+    cashflows = []
+
+    aporte_prev = 0.0
+    for _, row in df.iterrows():
+        fecha = pd.Timestamp(row["Date"]).to_pydatetime()
+
+        aporte_acum = float(row["Aporte_Acum"])
+        aporte_nuevo = aporte_acum - aporte_prev
+        aporte_prev = aporte_acum
+
+        if aporte_nuevo > 0:
+            cashflows.append((fecha, -aporte_nuevo))
+
+        retiro = float(row["Retiro"])
+        if retiro > 0:
+            cashflows.append((fecha, retiro))
+
+    fecha_final = pd.Timestamp(df["Date"].iloc[-1]).to_pydatetime()
+    cashflows.append((fecha_final, val_final))
+
+    tasa_xirr = xirr(cashflows)
+
+    if tasa_xirr is None:
+        return "Rendimiento anual equivalente del plan", 0.0
+
+    return "Rendimiento anual equivalente del plan", tasa_xirr * 100
+
+
 def descargar_sp500_mensual() -> pd.DataFrame:
     req = urllib.request.Request(
         STOOQ_DAILY_URL,
@@ -94,6 +207,7 @@ def descargar_sp500_mensual() -> pd.DataFrame:
     df["Price"] = pd.to_numeric(df["Close"], errors="coerce")
     df = df.dropna(subset=["Date", "Price"]).sort_values("Date").reset_index(drop=True)
 
+    # Último cierre disponible de cada mes
     df["Month"] = df["Date"].dt.to_period("M")
     df = df.groupby("Month", as_index=False).last()
     df["Date"] = df["Month"].dt.to_timestamp("M")
@@ -457,7 +571,7 @@ def construir_resumen_anual(df: pd.DataFrame, anio_inicio: int, mes_inicio: int)
     return resumen[columnas_finales]
 
 
-def crear_figura_principal(df: pd.DataFrame, resumen: pd.DataFrame, seleccion: str, nombre_cliente: str, subtitulo: str):
+def crear_figura_principal(df: pd.DataFrame, resumen: pd.DataFrame, seleccion: str, nombre_cliente: str, subtitulo: str, tipo_plan: str):
     fig = plt.figure(figsize=(15, 8.8), facecolor="white")
     ax = fig.add_subplot(111)
 
@@ -494,20 +608,13 @@ def crear_figura_principal(df: pd.DataFrame, resumen: pd.DataFrame, seleccion: s
     val_final = resumen["Valor_Cuenta"].iloc[-1] if not resumen.empty else 0
     val_rescate_final = resumen["Valor_Rescate"].iloc[-1] if not resumen.empty else 0
 
-    if inv_total > 0 and len(df) > 1 and val_final > 0:
-        años = (df["Date"].iloc[-1] - df["Date"].iloc[0]).days / 365.25
-        if años > 0:
-            rendimiento_anual_promedio = ((val_final / inv_total) ** (1 / años) - 1) * 100
-        else:
-            rendimiento_anual_promedio = 0.0
-    else:
-        rendimiento_anual_promedio = 0.0
+    etiqueta_rend, valor_rend = calcular_rendimiento_resumen(df, resumen, tipo_plan)
 
     texto_resumen = (
         f"Inversión total: {fmt_usd(inv_total)}   |   "
         f"Valor en cuenta: {fmt_usd(val_final)}   |   "
         f"Valor de rescate: {fmt_usd(val_rescate_final)}   |   "
-        f"Rendimiento anual promedio: {rendimiento_anual_promedio:.2f}%"
+        f"{etiqueta_rend}: {valor_rend:.2f}%"
     )
     if ret_total > 0:
         texto_resumen += f"   |   Retiros: {fmt_usd(ret_total)}"
@@ -883,7 +990,14 @@ if generar:
             mes_inicio=int(mes_inicio)
         )
 
-        fig_principal = crear_figura_principal(df_resultado, resumen, seleccion, nombre_cliente, subtitulo)
+        fig_principal = crear_figura_principal(
+            df_resultado,
+            resumen,
+            seleccion,
+            nombre_cliente,
+            subtitulo,
+            tipo_plan
+        )
 
         st.success("✅ Ilustración generada.")
         st.pyplot(fig_principal, use_container_width=True)
