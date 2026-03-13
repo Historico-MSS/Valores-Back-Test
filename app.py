@@ -1,22 +1,33 @@
-import streamlit as st
-import pandas as pd
+import io
+import os
+import traceback
+import urllib.request
+
 import matplotlib
-matplotlib.use("Agg") 
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-import io
-import os 
-import traceback
+from matplotlib.backends.backend_pdf import PdfPages
+import pandas as pd
+import streamlit as st
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Generador v16", page_icon="💼")
+st.set_page_config(
+    page_title="Generador de Ilustraciones Financieras",
+    page_icon="💼",
+    layout="wide"
+)
 
 # --- PASSWORD ---
 def check_password():
+    if "password_correct" not in st.session_state:
+        st.session_state["password_correct"] = False
+
     def password_entered():
-        if st.session_state["password"] == "test": 
+        if st.session_state.get("password", "") == "test":
             st.session_state["password_correct"] = True
-            del st.session_state["password"]
+            if "password" in st.session_state:
+                del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
@@ -27,10 +38,11 @@ def check_password():
     st.text_input("Contraseña:", type="password", on_change=password_entered, key="password")
     return False
 
+
 if not check_password():
     st.stop()
 
-# --- DATOS Y CONSTANTES ---
+# --- CONSTANTES ---
 FACTORES_COSTOS = {
     5: (0.2475, 0.0619), 6: (0.2970, 0.0743), 7: (0.3465, 0.0866), 8: (0.3960, 0.0990),
     9: (0.4455, 0.1114), 10: (0.4950, 0.1238), 11: (0.5445, 0.1361), 12: (0.5940, 0.1485),
@@ -39,377 +51,859 @@ FACTORES_COSTOS = {
 }
 
 LISTA_MESES = [
-    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
+    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
     "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
 ]
 
-# --- INTERFAZ PRINCIPAL ---
-st.title("Generador de Ilustraciones con Valores Históricos")
+CACHE_DIR = "data_cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
 
-# Detectar archivos CSV
-archivos = [f for f in os.listdir() if f.endswith('.csv')]
+# Stooq diario -> luego convertimos a mensual real
+STOOQ_DAILY_URL = "https://stooq.com/q/d/l/?s=%5Espx&i=d"
+
+
+# --- UTILIDADES ---
+def mes_numero(nombre_mes: str) -> int:
+    return LISTA_MESES.index(nombre_mes) + 1
+
+
+def fmt_usd(x):
+    return f"USD {x:,.2f}"
+
+
+def fmt_pct(x):
+    return f"{x:+.2f}%"
+
+
+def descargar_sp500_mensual() -> pd.DataFrame:
+    req = urllib.request.Request(
+        STOOQ_DAILY_URL,
+        headers={"User-Agent": "Mozilla/5.0"}
+    )
+
+    with urllib.request.urlopen(req, timeout=30) as response:
+        raw = response.read().decode("utf-8")
+
+    df = pd.read_csv(io.StringIO(raw))
+    df.columns = [c.strip().title() for c in df.columns]
+
+    if "Date" not in df.columns or "Close" not in df.columns:
+        raise ValueError("Stooq no devolvió el formato esperado.")
+
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df["Price"] = pd.to_numeric(df["Close"], errors="coerce")
+    df = df.dropna(subset=["Date", "Price"]).sort_values("Date").reset_index(drop=True)
+
+    # Último cierre disponible de cada mes
+    df["Month"] = df["Date"].dt.to_period("M")
+    df = df.groupby("Month", as_index=False).last()
+    df["Date"] = df["Month"].dt.to_timestamp("M")
+    df = df[["Date", "Price"]].reset_index(drop=True)
+
+    return df
+
+
+def cargar_serie_mercado(forzar_actualizacion: bool = False):
+    cache_file = os.path.join(CACHE_DIR, "sp500_stooq_monthly.csv")
+    origen = "cache local"
+
+    if forzar_actualizacion or not os.path.exists(cache_file):
+        try:
+            df = descargar_sp500_mensual()
+            df.to_csv(cache_file, index=False)
+            origen = "descarga online"
+            return df, origen
+        except Exception:
+            if not os.path.exists(cache_file):
+                raise
+
+    df = pd.read_csv(cache_file)
+    df.columns = [c.strip() for c in df.columns]
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df["Price"] = pd.to_numeric(df["Price"], errors="coerce")
+    df = df.dropna(subset=["Date", "Price"]).sort_values("Date").reset_index(drop=True)
+
+    return df, origen
+
+
+def detectar_planes_csv():
+    archivos = [f for f in os.listdir() if f.lower().endswith(".csv")]
+    planes = {}
+
+    for f in archivos:
+        nombre = f.lower()
+
+        if "mis" in nombre:
+            planes["MIS - Aporte Único"] = (f, 0, "MIS")
+
+        elif "mss" in nombre:
+            plazo = None
+
+            for i in range(5, 21):
+                patrones = [
+                    f"mss - {i}",
+                    f"mss-{i}",
+                    f"mss {i}",
+                    f" {i} años",
+                    f" {i} anos",
+                ]
+                if any(p in nombre for p in patrones):
+                    plazo = i
+                    break
+
+            if plazo is None:
+                for i in range(5, 21):
+                    if nombre.endswith(f"{i}.csv"):
+                        plazo = i
+                        break
+
+            if plazo is not None:
+                planes[f"MSS - {plazo} Años"] = (f, plazo, "MSS")
+
+    return planes
+
+
+def simular_mis(
+    df_base: pd.DataFrame,
+    monto_inicial: float,
+    anio_inicio: int,
+    mes_inicio: int,
+    aportes_extra: list,
+    retiros_programados: list
+) -> pd.DataFrame:
+    df = df_base.copy()
+    fecha_filtro = pd.Timestamp(year=anio_inicio, month=mes_inicio, day=1) + pd.offsets.MonthEnd(0)
+    df = df[df["Date"] >= fecha_filtro].copy().reset_index(drop=True)
+
+    if df.empty:
+        raise ValueError("No hay datos históricos disponibles desde la fecha seleccionada.")
+
+    df["Year"] = df["Date"].dt.year
+    precios = df["Price"].values
+
+    cubetas = [{
+        "monto": float(monto_inicial),
+        "saldo": 0.0,
+        "edad": 0,
+        "activa": False,
+        "ini": (anio_inicio, mes_inicio)
+    }]
+
+    for extra in aportes_extra:
+        cubetas.append({
+            "monto": float(extra["monto"]),
+            "saldo": 0.0,
+            "edad": 0,
+            "activa": False,
+            "ini": (int(extra["anio"]), int(extra["mes"]))
+        })
+
+    lista_vn, lista_vr, lista_aportes_acum, lista_retiros = [], [], [], []
+    acumulado_aportes = 0.0
+
+    for i in range(len(df)):
+        fecha_act = df["Date"].iloc[i]
+        anio_act, mes_act = fecha_act.year, fecha_act.month
+
+        retiro_mes = 0.0
+        for r in retiros_programados:
+            if int(r["anio"]) == anio_act and int(r["mes"]) == mes_act:
+                retiro_mes += float(r["monto"])
+        lista_retiros.append(retiro_mes)
+
+        saldo_total_previo = sum(c["saldo"] for c in cubetas if c["activa"])
+
+        vn_mes_total = 0.0
+        vr_mes_total = 0.0
+
+        for c in cubetas:
+            if not c["activa"] and (
+                anio_act > c["ini"][0] or
+                (anio_act == c["ini"][0] and mes_act >= c["ini"][1])
+            ):
+                c["activa"] = True
+                c["saldo"] = c["monto"]
+                acumulado_aportes += c["monto"]
+                saldo_total_previo += c["monto"]
+
+            if c["activa"]:
+                if c["edad"] > 0 and i > 0 and precios[i - 1] > 0:
+                    rendimiento = precios[i] / precios[i - 1]
+                    c["saldo"] *= rendimiento
+
+                if retiro_mes > 0 and saldo_total_previo > 0:
+                    peso = c["saldo"] / saldo_total_previo if saldo_total_previo > 0 else 0
+                    deduccion_retiro = retiro_mes * peso
+                    c["saldo"] = max(0.0, c["saldo"] - deduccion_retiro)
+
+                costo_establecimiento = (c["monto"] * 0.016) / 12.0
+                if c["edad"] < 60:
+                    c["saldo"] -= costo_establecimiento
+                else:
+                    c["saldo"] -= (c["saldo"] * (0.01 / 12.0))
+
+                c["saldo"] = max(0.0, c["saldo"])
+
+                penalizacion = 0.0
+                if c["edad"] < 60:
+                    meses_restantes = 60 - (c["edad"] + 1)
+                    penalizacion = meses_restantes * costo_establecimiento
+
+                vr_cubeta = max(0.0, c["saldo"] - penalizacion)
+
+                vn_mes_total += c["saldo"]
+                vr_mes_total += vr_cubeta
+                c["edad"] += 1
+
+        lista_vn.append(vn_mes_total)
+        lista_vr.append(vr_mes_total)
+        lista_aportes_acum.append(acumulado_aportes)
+
+    df["Aporte_Acum"] = lista_aportes_acum
+    df["Valor_Cuenta"] = lista_vn
+    df["Valor_Rescate"] = lista_vr
+    df["Retiro"] = lista_retiros
+    df["Mes_Plan"] = range(1, len(df) + 1)
+    return df
+
+
+def simular_mss(
+    df_base: pd.DataFrame,
+    plazo_anios: int,
+    monto_aporte: float,
+    frecuencia_pago: str,
+    anio_inicio: int,
+    mes_inicio: int,
+    retiros_programados: list
+) -> pd.DataFrame:
+    df = df_base.copy()
+    fecha_filtro = pd.Timestamp(year=anio_inicio, month=mes_inicio, day=1) + pd.offsets.MonthEnd(0)
+    df = df[df["Date"] >= fecha_filtro].copy().reset_index(drop=True)
+
+    if df.empty:
+        raise ValueError("No hay datos históricos disponibles desde la fecha seleccionada.")
+
+    df["Year"] = df["Date"].dt.year
+    precios = df["Price"].values
+
+    mapa_pasos = {"Mensual": 1, "Trimestral": 3, "Semestral": 6, "Anual": 12}
+    step_meses = mapa_pasos[frecuencia_pago]
+    pagos_anio = 12 / step_meses
+    aporte_anual = monto_aporte * pagos_anio
+
+    factor1, factor2 = FACTORES_COSTOS.get(plazo_anios, (0, 0))
+    costo_total_apertura = (aporte_anual * factor1) + (aporte_anual * factor2)
+    meses_totales = plazo_anios * 12
+    deduccion_mensual = costo_total_apertura / meses_totales if meses_totales > 0 else 0
+
+    lista_vn, lista_vr, lista_aportes_acum, lista_retiros, lista_etapa = [], [], [], [], []
+    saldo_actual = 0.0
+    aporte_acumulado = 0.0
+
+    for i in range(len(df)):
+        fecha_act = df["Date"].iloc[i]
+
+        # APORTES SOLO DURANTE EL PLAZO DEL PLAN
+        if i < meses_totales and i % step_meses == 0:
+            saldo_actual += monto_aporte
+            aporte_acumulado += monto_aporte
+
+        if i > 0 and precios[i - 1] > 0:
+            rendimiento = precios[i] / precios[i - 1]
+            saldo_actual *= rendimiento
+
+        retiro_mes = 0.0
+        for r in retiros_programados:
+            if int(r["anio"]) == fecha_act.year and int(r["mes"]) == fecha_act.month:
+                retiro_mes += float(r["monto"])
+        lista_retiros.append(retiro_mes)
+
+        if retiro_mes > 0:
+            saldo_actual = max(0.0, saldo_actual - retiro_mes)
+
+        if i < meses_totales:
+            saldo_actual -= deduccion_mensual
+            meses_restantes = meses_totales - (i + 1)
+            penalizacion = meses_restantes * deduccion_mensual if meses_restantes > 0 else 0
+            valor_rescate = max(0.0, saldo_actual - penalizacion)
+            etapa = "Acumulación"
+        else:
+            saldo_actual -= (saldo_actual * (0.01 / 12.0))
+            valor_rescate = max(0.0, saldo_actual)
+            etapa = "Post-maduración"
+
+        saldo_actual = max(0.0, saldo_actual)
+
+        lista_vn.append(saldo_actual)
+        lista_vr.append(valor_rescate)
+        lista_aportes_acum.append(aporte_acumulado)  # queda plano tras terminar aportes
+        lista_etapa.append(etapa)
+
+    df["Aporte_Acum"] = lista_aportes_acum
+    df["Valor_Cuenta"] = lista_vn
+    df["Valor_Rescate"] = lista_vr
+    df["Retiro"] = lista_retiros
+    df["Etapa"] = lista_etapa
+    df["Mes_Plan"] = range(1, len(df) + 1)
+    return df
+
+
+def construir_resumen_anual(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    if "Mes_Plan" not in df.columns:
+        df["Mes_Plan"] = range(1, len(df) + 1)
+
+    df["Año_Plan"] = ((df["Mes_Plan"] - 1) // 12) + 1
+
+    agg_cols = {
+        "Year": "last",
+        "Aporte_Acum": "last",
+        "Valor_Cuenta": "last",
+        "Valor_Rescate": "last",
+        "Retiro": "sum"
+    }
+
+    if "Etapa" in df.columns:
+        agg_cols["Etapa"] = "last"
+
+    resumen = df.groupby("Año_Plan", as_index=False).agg(agg_cols)
+
+    resumen["Saldo_Inicial"] = resumen["Valor_Cuenta"].shift(1).fillna(0)
+    resumen["Aporte_Nuevo"] = resumen["Aporte_Acum"] - resumen["Aporte_Acum"].shift(1).fillna(0)
+
+    resumen["Ganancia"] = (
+        resumen["Valor_Cuenta"]
+        - resumen["Saldo_Inicial"]
+        - resumen["Aporte_Nuevo"]
+        + resumen["Retiro"]
+    )
+
+    resumen["Base_Calculo"] = (resumen["Saldo_Inicial"] + resumen["Aporte_Nuevo"]).replace(0, pd.NA)
+    resumen["Rendimiento"] = (resumen["Ganancia"] / resumen["Base_Calculo"]) * 100
+    resumen["Rendimiento"] = resumen["Rendimiento"].fillna(0)
+
+    resumen["Retiro_Acumulado"] = resumen["Retiro"].cumsum()
+    base_acumulada = resumen["Aporte_Acum"].replace(0, pd.NA)
+
+    resumen["Rendimiento_Acumulado"] = (
+        (resumen["Valor_Cuenta"] + resumen["Retiro_Acumulado"] - resumen["Aporte_Acum"])
+        / base_acumulada
+    ) * 100
+    resumen["Rendimiento_Acumulado"] = resumen["Rendimiento_Acumulado"].fillna(0)
+
+    columnas_finales = [
+        "Año_Plan",
+        "Year",
+        "Aporte_Acum",
+        "Retiro",
+        "Valor_Cuenta",
+        "Valor_Rescate",
+        "Rendimiento",
+        "Rendimiento_Acumulado"
+    ]
+
+    if "Etapa" in resumen.columns:
+        columnas_finales.append("Etapa")
+
+    return resumen[columnas_finales]
+
+
+def crear_figura_principal(df: pd.DataFrame, resumen: pd.DataFrame, seleccion: str, nombre_cliente: str, subtitulo: str):
+    fig = plt.figure(figsize=(15, 8.8), facecolor="white")
+    ax = fig.add_subplot(111)
+
+    fig.text(
+        0.5, 0.965,
+        f"{seleccion}",
+        ha="center", va="top",
+        fontsize=22, fontweight="bold", color="#1f1f1f"
+    )
+
+    fig.text(
+        0.5, 0.928,
+        f"Cliente: {nombre_cliente}",
+        ha="center", va="top",
+        fontsize=16, fontweight="bold", color="#2f2f2f"
+    )
+
+    fig.text(
+        0.5, 0.895,
+        "Fuente: S&P 500 (^SPX) mensual - Stooq",
+        ha="center", va="top",
+        fontsize=10.5, color="#666666"
+    )
+
+    fig.text(
+        0.5, 0.870,
+        subtitulo,
+        ha="center", va="top",
+        fontsize=12, color="#4a4a4a"
+    )
+
+    inv_total = resumen["Aporte_Acum"].iloc[-1] if not resumen.empty else 0
+    ret_total = resumen["Retiro"].sum() if not resumen.empty else 0
+    val_final = resumen["Valor_Cuenta"].iloc[-1] if not resumen.empty else 0
+    val_rescate_final = resumen["Valor_Rescate"].iloc[-1] if not resumen.empty else 0
+
+    texto_resumen = (
+        f"Inversión total: {fmt_usd(inv_total)}   |   "
+        f"Valor en cuenta: {fmt_usd(val_final)}   |   "
+        f"Valor de rescate: {fmt_usd(val_rescate_final)}"
+    )
+    if ret_total > 0:
+        texto_resumen += f"   |   Retiros: {fmt_usd(ret_total)}"
+
+    fig.text(
+        0.5, 0.830,
+        texto_resumen,
+        ha="center", va="top",
+        fontsize=11, fontweight="bold", color="#1f1f1f",
+        bbox=dict(
+            facecolor="#f7f9fc",
+            edgecolor="#c7d2e3",
+            boxstyle="round,pad=0.45"
+        )
+    )
+
+    ax.set_facecolor("white")
+
+    ax.plot(
+        df["Date"], df["Aporte_Acum"],
+        color="#2ca02c", linestyle="--", linewidth=2.2,
+        label="Capital invertido"
+    )
+    ax.plot(
+        df["Date"], df["Valor_Rescate"],
+        color="#8c8c8c", linestyle="--", linewidth=2.0,
+        label="Valor rescate"
+    )
+    ax.plot(
+        df["Date"], df["Valor_Cuenta"],
+        color="#0b5cad", linewidth=2.8,
+        label="Valor cuenta"
+    )
+
+    ax.legend(
+        loc="upper left",
+        frameon=True,
+        facecolor="white",
+        edgecolor="#d9d9d9",
+        fontsize=11
+    )
+
+    ax.grid(True, alpha=0.18, linewidth=0.8)
+    ax.yaxis.set_major_formatter(ticker.StrMethodFormatter('USD {x:,.0f}'))
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#c8c8c8")
+    ax.spines["bottom"].set_color("#c8c8c8")
+
+    ax.tick_params(axis="x", labelsize=10, colors="#444444")
+    ax.tick_params(axis="y", labelsize=10, colors="#444444")
+
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+
+    plt.tight_layout(rect=[0.04, 0.06, 0.98, 0.70])
+
+    return fig
+
+
+def preparar_tabla_mostrar(resumen: pd.DataFrame) -> pd.DataFrame:
+    mostrar = resumen.copy().rename(columns={
+        "Año_Plan": "Año de plan",
+        "Year": "Año calendario",
+        "Aporte_Acum": "Aporte acumulado",
+        "Retiro": "Retiro",
+        "Valor_Cuenta": "Valor en cuenta",
+        "Valor_Rescate": "Valor de rescate",
+        "Rendimiento": "Rendimiento",
+        "Rendimiento_Acumulado": "Rendimiento acumulado"
+    })
+
+    columnas_orden = [
+        "Año de plan",
+        "Año calendario",
+        "Aporte acumulado",
+        "Retiro",
+        "Valor en cuenta",
+        "Valor de rescate",
+        "Rendimiento",
+        "Rendimiento acumulado"
+    ]
+
+    if "Etapa" in mostrar.columns:
+        columnas_orden.append("Etapa")
+
+    return mostrar[columnas_orden]
+
+
+def generar_tabla_excel(tabla_df: pd.DataFrame):
+    try:
+        import openpyxl  # noqa: F401
+    except ImportError:
+        return None
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        tabla_df.to_excel(writer, index=False, sheet_name="Resumen")
+    output.seek(0)
+    return output.getvalue()
+
+
+def generar_tabla_pdf(tabla_df: pd.DataFrame, titulo: str = "Resumen anual") -> bytes:
+    output = io.BytesIO()
+
+    fig, ax = plt.subplots(figsize=(17, max(4.5, 0.50 * len(tabla_df) + 2.4)))
+    ax.axis("off")
+    ax.set_title(titulo, fontsize=16, fontweight="bold", pad=20)
+
+    tabla = ax.table(
+        cellText=tabla_df.values,
+        colLabels=tabla_df.columns,
+        loc="center",
+        cellLoc="center"
+    )
+
+    tabla.auto_set_font_size(False)
+    tabla.set_fontsize(8.5)
+    tabla.scale(1.18, 1.6)
+
+    cols = list(tabla_df.columns)
+
+    for (row, col), cell in tabla.get_celld().items():
+        cell.set_edgecolor("#d8dde6")
+        cell.set_linewidth(0.6)
+
+        if row == 0:
+            cell.set_facecolor("#40466e")
+            cell.set_text_props(color="white", weight="bold", fontsize=9)
+        elif row % 2 == 0:
+            cell.set_facecolor("#f7f9fc")
+        else:
+            cell.set_facecolor("white")
+
+    if "Valor de rescate" in cols and "Aporte acumulado" in cols:
+        idx_rescate = cols.index("Valor de rescate")
+        idx_aporte = cols.index("Aporte acumulado")
+
+        for i in range(len(tabla_df)):
+            rescate_txt = str(tabla_df.iloc[i, idx_rescate]).replace("USD", "").replace(",", "").strip()
+            aporte_txt = str(tabla_df.iloc[i, idx_aporte]).replace("USD", "").replace(",", "").strip()
+
+            try:
+                rescate_val = float(rescate_txt)
+                aporte_val = float(aporte_txt)
+                if rescate_val < aporte_val:
+                    tabla[(i + 1, idx_rescate)].set_text_props(color="#D4AC0D", weight="bold")
+            except Exception:
+                pass
+
+    plt.tight_layout()
+    fig.savefig(output, format="pdf", bbox_inches="tight")
+    plt.close(fig)
+    output.seek(0)
+    return output.getvalue()
+
+
+def generar_pdf_completo(fig_principal, tabla_export: pd.DataFrame, nombre_cliente: str) -> bytes:
+    output = io.BytesIO()
+
+    with PdfPages(output) as pdf:
+        pdf.savefig(fig_principal, bbox_inches="tight")
+
+        fig2, ax2 = plt.subplots(figsize=(17, max(5.5, 0.50 * len(tabla_export) + 2.8)))
+        ax2.axis("off")
+        ax2.set_title(f"Resumen anual - {nombre_cliente}", fontsize=16, fontweight="bold", pad=20)
+
+        tabla = ax2.table(
+            cellText=tabla_export.values,
+            colLabels=tabla_export.columns,
+            loc="center",
+            cellLoc="center"
+        )
+
+        tabla.auto_set_font_size(False)
+        tabla.set_fontsize(8.5)
+        tabla.scale(1.18, 1.62)
+
+        cols = list(tabla_export.columns)
+        for (row, col), cell in tabla.get_celld().items():
+            cell.set_edgecolor("#d8dde6")
+            cell.set_linewidth(0.6)
+
+            if row == 0:
+                cell.set_facecolor("#40466e")
+                cell.set_text_props(color="white", weight="bold", fontsize=9)
+            elif row % 2 == 0:
+                cell.set_facecolor("#f7f9fc")
+            else:
+                cell.set_facecolor("white")
+
+        if "Valor de rescate" in cols and "Aporte acumulado" in cols:
+            idx_rescate = cols.index("Valor de rescate")
+            idx_aporte = cols.index("Aporte acumulado")
+            for i in range(len(tabla_export)):
+                rescate_txt = str(tabla_export.iloc[i, idx_rescate]).replace("USD", "").replace(",", "").strip()
+                aporte_txt = str(tabla_export.iloc[i, idx_aporte]).replace("USD", "").replace(",", "").strip()
+                try:
+                    rescate_val = float(rescate_txt)
+                    aporte_val = float(aporte_txt)
+                    if rescate_val < aporte_val:
+                        tabla[(i + 1, idx_rescate)].set_text_props(color="#D4AC0D", weight="bold")
+                except Exception:
+                    pass
+
+        fig2.text(
+            0.5, 0.03,
+            "Disclaimer: esta herramienta es únicamente ilustrativa. No constituye una proyección garantizada, una oferta, ni asesoría financiera, legal o fiscal.",
+            ha="center", fontsize=9, color="#666"
+        )
+
+        plt.tight_layout(rect=[0.02, 0.05, 0.98, 0.95])
+        pdf.savefig(fig2, bbox_inches="tight")
+        plt.close(fig2)
+
+    output.seek(0)
+    return output.getvalue()
+
+
+# --- CARGA DE MERCADO ---
+st.sidebar.header("Serie de mercado")
+st.sidebar.caption("Fuente única: Stooq ^SPX mensual real")
+forzar_actualizacion = st.sidebar.button("🔄 Actualizar base ahora")
+
+try:
+    df_mercado, origen_base = cargar_serie_mercado(forzar_actualizacion=forzar_actualizacion)
+    st.sidebar.success(f"Base cargada: {len(df_mercado)} meses")
+    st.sidebar.caption(
+        f"Rango disponible: {df_mercado['Date'].min().strftime('%Y-%m')} a {df_mercado['Date'].max().strftime('%Y-%m')}"
+    )
+    st.sidebar.caption(f"Origen: {origen_base}")
+except Exception:
+    st.error("No se pudo cargar la base de mercado.")
+    st.code(traceback.format_exc())
+    st.stop()
+
+# --- DETECCIÓN DE PLANES ---
+planes_disponibles = detectar_planes_csv()
+
+# --- UI PRINCIPAL ---
+st.title("💼 Generador de Ilustraciones Financieras")
+st.caption("Usando S&P 500 (^SPX) mensual real para rendimiento compuesto.")
+st.info("Disclaimer: esta herramienta es únicamente ilustrativa. No constituye una proyección garantizada, una oferta, ni asesoría financiera, legal o fiscal.")
 
 with st.sidebar:
-    st.header("Configuración")
-    nombre_cliente = st.text_input("Nombre Cliente", value="Cliente Ejemplo")
-    
-    # Mapeo de planes
-    planes_disponibles = {}
+    st.header("Tipo de Plan")
+
+    opciones_ordenadas = []
+    if "MIS - Aporte Único" in planes_disponibles:
+        opciones_ordenadas.append("MIS - Aporte Único")
     for i in range(5, 21):
-        for f in archivos:
-            if "MSS" in f and str(i) in f:
-                if i < 10 and f"1{i}" in f: continue 
-                planes_disponibles[f"MSS - {i} Años"] = (f, i)
-    
-    for f in archivos:
-        if "nico" in f.lower() or "unique" in f.lower():
-            planes_disponibles["MIS - Aporte Unico"] = (f, 0)
-    
-    if not planes_disponibles:
-        st.error("🚨 No se encontraron archivos CSV.")
+        nombre = f"MSS - {i} Años"
+        if nombre in planes_disponibles:
+            opciones_ordenadas.append(nombre)
+
+    if not opciones_ordenadas:
+        st.error("No se encontraron archivos CSV de planes en la carpeta.")
         st.stop()
-        
-    seleccion = st.selectbox("Selecciona Plan", list(planes_disponibles.keys()))
-    archivo_csv, plazo_anios = planes_disponibles[seleccion]
-    
-    # Variables de entrada
-    aportes_extra = [] 
-    retiros_programados = [] 
-    
-    if seleccion == "MIS - Aporte Unico":
-        st.info("Plan de Inversión")
+
+    seleccion = st.selectbox("Tipo de Plan", opciones_ordenadas)
+
+    st.subheader("📆 Fecha de Inicio")
+    min_year = int(df_mercado["Date"].dt.year.min())
+    max_year = int(df_mercado["Date"].dt.year.max())
+
+    years = list(range(min_year, max_year + 1))
+    default_year = 2010 if 2010 in years else min_year
+
+    c1, c2 = st.columns(2)
+    with c1:
+        anio_inicio = st.selectbox("Año Inicio", years, index=years.index(default_year))
+    with c2:
+        mes_inicio_txt = st.selectbox("Mes Inicio", LISTA_MESES, index=0)
+        mes_inicio = mes_numero(mes_inicio_txt)
+
+    nombre_cliente = st.text_input("Nombre Cliente", value="Cliente Ejemplo")
+
+    aportes_extra = []
+    retiros_programados = []
+
+    archivo_csv, plazo_anios, tipo_plan = planes_disponibles[seleccion]
+
+    if tipo_plan == "MIS":
         monto_input = st.number_input("Inversión Inicial (USD)", min_value=1000, value=10000, step=1000)
-        frecuencia_pago = "Único"
-        
-        col1, col2 = st.columns(2)
-        with col1: 
-            anio_inicio = st.number_input("Año Inicio", min_value=2000, max_value=2024, value=2015)
-        with col2: 
-            mes_txt = st.selectbox("Mes Inicio", LISTA_MESES)
-            mes_inicio = LISTA_MESES.index(mes_txt) + 1
-            
+
         with st.expander("➕ Aportes Adicionales"):
-            if st.checkbox("Habilitar Aportes Extra"):
+            if st.checkbox("Habilitar aportes extra"):
                 for i in range(4):
                     st.divider()
-                    c_m, c_a, c_me = st.columns([1.5, 1, 1.3])
-                    with c_m: m_x = st.number_input(f"Monto {i+1}", 0, step=1000)
-                    with c_a: a_x = st.number_input(f"Año {i+1}", anio_inicio, 2025, anio_inicio+1)
-                    with c_me: 
-                        me_x_txt = st.selectbox(f"Mes {i+1}", LISTA_MESES, key=f"me{i}")
-                        me_x = LISTA_MESES.index(me_x_txt) + 1
-                    
+                    a1, a2, a3 = st.columns([1.3, 1, 1.2])
+                    with a1:
+                        m_x = st.number_input(f"Monto {i+1}", min_value=0, value=0, step=1000, key=f"mx_{i}")
+                    with a2:
+                        an_x = st.number_input(
+                            f"Año {i+1}",
+                            min_value=min_year,
+                            max_value=max_year,
+                            value=min(anio_inicio + 1, max_year),
+                            key=f"ax_{i}"
+                        )
+                    with a3:
+                        me_x_txt = st.selectbox(f"Mes {i+1}", LISTA_MESES, key=f"mex_{i}")
+                        me_x = mes_numero(me_x_txt)
+
                     if m_x > 0:
-                        aportes_extra.append({"monto": m_x, "anio": a_x, "mes": me_x})
-    
+                        aportes_extra.append({"monto": m_x, "anio": an_x, "mes": me_x})
+
     else:
-        st.info("Plan de Ahorro")
-        # --- AQUI EL MINIMO 150 ---
-        monto_input = st.number_input("Aporte (USD)", min_value=150, value=500, step=50)
+        monto_input = st.number_input("Aporte periódico (USD)", min_value=150, value=500, step=50)
         frecuencia_pago = st.selectbox("Frecuencia", ["Mensual", "Trimestral", "Semestral", "Anual"])
-        mapa_pasos = {"Mensual": 1, "Trimestral": 3, "Semestral": 6, "Anual": 12}
-        step_meses = mapa_pasos[frecuencia_pago]
-        anio_inicio, mes_inicio = None, None
 
     with st.expander("💸 Retiros Parciales"):
-        if st.checkbox("Habilitar Retiros"):
+        if st.checkbox("Habilitar retiros"):
             for i in range(3):
                 st.divider()
-                c_mr, c_ar, c_mer = st.columns([1.5, 1, 1.3])
-                with c_mr: m_r = st.number_input(f"Retiro {i+1}", 0, step=1000)
-                with c_ar: 
-                    min_y = anio_inicio if anio_inicio else 2000
-                    a_r = st.number_input(f"Año {i+1}", min_y, 2035, min_y+5)
-                with c_mer: 
-                    mer_txt = st.selectbox(f"Mes {i+1}", LISTA_MESES, key=f"mr{i}")
-                    me_r = LISTA_MESES.index(mer_txt) + 1
-                
+                r1, r2, r3 = st.columns([1.3, 1, 1.2])
+                with r1:
+                    m_r = st.number_input(f"Retiro {i+1}", min_value=0, value=0, step=1000, key=f"mr_{i}")
+                with r2:
+                    an_r = st.number_input(
+                        f"Año retiro {i+1}",
+                        min_value=min_year,
+                        max_value=max_year,
+                        value=min(anio_inicio + 5, max_year),
+                        key=f"ar_{i}"
+                    )
+                with r3:
+                    me_r_txt = st.selectbox(f"Mes retiro {i+1}", LISTA_MESES, key=f"mer_{i}")
+                    me_r = mes_numero(me_r_txt)
+
                 if m_r > 0:
-                    retiros_programados.append({"monto": m_r, "anio": a_r, "mes": me_r})
+                    retiros_programados.append({"monto": m_r, "anio": an_r, "mes": me_r})
 
-# --- LÓGICA DE CÁLCULO ---
-if st.button("Generar Ilustración", type="primary"):
-    status = st.empty()
+generar = st.button("Generar Ilustración", type="primary")
+
+if generar:
     try:
-        status.info("⏳ Procesando datos...")
-        
-        # Carga y limpieza segura
-        df = pd.read_csv(archivo_csv)
-        df.columns = df.columns.str.strip()
-        
-        # Limpieza paso a paso para evitar errores de linea larga
-        for col in ['Aporte', 'Valor Neto', 'Price']:
-            if col in df.columns:
-                # 1. Convertir a string
-                serie_limpia = df[col].astype(str)
-                # 2. Quitar simbolo $
-                serie_limpia = serie_limpia.str.replace('$', '', regex=False)
-                # 3. Quitar comas
-                serie_limpia = serie_limpia.str.replace(',', '', regex=False)
-                # 4. Convertir a numero
-                df[col] = pd.to_numeric(serie_limpia, errors='coerce').fillna(0)
-
-        df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
-        df = df.dropna(subset=['Date']).sort_values('Date')
-
-        # --- SIMULACIÓN ---
-        if seleccion == "MIS - Aporte Unico":
-            fecha_filtro = pd.Timestamp(year=anio_inicio, month=mes_inicio, day=1)
-            df = df[df['Date'] >= fecha_filtro].copy().reset_index(drop=True)
-            
-            if df.empty:
-                st.error("No hay datos históricos para la fecha seleccionada.")
-                st.stop()
-            
-            df['Year'] = df['Date'].dt.year
-            
-            # Listas de resultados
-            lista_vn, lista_vr, lista_aportes_acum, lista_retiros = [], [], [], []
-            
-            # Inicializar cubetas
-            cubetas = [{"monto": monto_input, "saldo": 0, "edad": 0, "activa": False, "ini": (anio_inicio, mes_inicio)}]
-            for extra in aportes_extra:
-                cubetas.append({"monto": extra["monto"], "saldo": 0, "edad": 0, "activa": False, "ini": (extra["anio"], extra["mes"])})
-            
-            precios = df['Price'].values
-            acumulado_aportes = 0
-            
-            for i in range(len(df)):
-                fecha_act = df['Date'].iloc[i]
-                anio_act, mes_act = fecha_act.year, fecha_act.month
-                
-                # Calcular Retiros del mes
-                retiro_mes = 0
-                for r in retiros_programados:
-                    if r["anio"] == anio_act and r["mes"] == mes_act:
-                        retiro_mes += r["monto"]
-                lista_retiros.append(retiro_mes)
-                
-                # Calcular saldo total previo (para prorratear retiros)
-                saldo_total_previo = sum(c["saldo"] for c in cubetas if c["activa"])
-                
-                vn_mes_total = 0
-                vr_mes_total = 0
-                
-                for c in cubetas:
-                    # Activar cubeta si toca
-                    if not c["activa"]:
-                        if anio_act == c["ini"][0] and mes_act == c["ini"][1]:
-                            c["activa"] = True
-                            c["saldo"] = c["monto"]
-                            acumulado_aportes += c["monto"]
-                            saldo_total_previo += c["monto"]
-                    
-                    if c["activa"]:
-                        # 1. Rendimiento
-                        if c["edad"] > 0 and i > 0 and precios[i-1] > 0:
-                            rendimiento = precios[i] / precios[i-1]
-                            c["saldo"] *= rendimiento
-                        
-                        # 2. Retiro Prorrateado
-                        if retiro_mes > 0 and saldo_total_previo > 0:
-                            peso = c["saldo"] / saldo_total_previo
-                            deduccion_retiro = retiro_mes * peso
-                            c["saldo"] = max(0, c["saldo"] - deduccion_retiro)
-                        
-                        # 3. Costos
-                        costo_establecimiento = (c["monto"] * 0.016) / 12
-                        if c["edad"] < 60:
-                            c["saldo"] -= costo_establecimiento
-                        else:
-                            c["saldo"] -= (c["saldo"] * (0.01 / 12)) # Costo Admin
-                        
-                        c["saldo"] = max(0, c["saldo"])
-                        
-                        # 4. Rescate
-                        penalizacion = 0
-                        if c["edad"] < 60:
-                            meses_restantes = 60 - (c["edad"] + 1)
-                            penalizacion = meses_restantes * costo_establecimiento
-                        
-                        vr_cubeta = max(0, c["saldo"] - penalizacion)
-                        
-                        vn_mes_total += c["saldo"]
-                        vr_mes_total += vr_cubeta
-                        c["edad"] += 1
-                
-                lista_vn.append(vn_mes_total)
-                lista_vr.append(vr_mes_total)
-                lista_aportes_acum.append(acumulado_aportes)
-            
-            df['Aporte_Acum'] = lista_aportes_acum
-            df['Valor_Cuenta'] = lista_vn
-            df['Valor_Rescate'] = lista_vr
-            df['Retiro'] = lista_retiros
-
-        else: # Lógica MSS
-            df['Year'] = df['Date'].dt.year
-            
-            pagos_anio = 12 / step_meses
-            aporte_anual = monto_input * pagos_anio
-            
-            factor1, factor2 = FACTORES_COSTOS.get(plazo_anios, (0, 0))
-            costo_total_apertura = (aporte_anual * factor1) + (aporte_anual * factor2)
-            meses_totales = plazo_anios * 12
-            deduccion_mensual = costo_total_apertura / meses_totales
-            
-            lista_vn, lista_vr, lista_aportes_acum, lista_retiros = [], [], [], []
-            saldo_actual = 0
-            aporte_acumulado = 0
-            precios = df['Price'].values
-            
-            for i in range(len(df)):
-                fecha_act = df['Date'].iloc[i]
-                if i >= meses_totales: break
-                
-                # Aporte
-                if i % step_meses == 0:
-                    saldo_actual += monto_input
-                    aporte_acumulado += monto_input
-                
-                # Rendimiento
-                if i > 0 and precios[i-1] > 0:
-                    rendimiento = precios[i] / precios[i-1]
-                    saldo_actual *= rendimiento
-                
-                # Retiro
-                retiro_mes = 0
-                for r in retiros_programados:
-                    if r["anio"] == fecha_act.year and r["mes"] == fecha_act.month:
-                        retiro_mes += r["monto"]
-                lista_retiros.append(retiro_mes)
-                
-                if retiro_mes > 0:
-                    saldo_actual = max(0, saldo_actual - retiro_mes)
-                
-                # Costos
-                saldo_actual -= deduccion_mensual
-                lista_vn.append(saldo_actual)
-                
-                # Rescate
-                meses_restantes = meses_totales - (i + 1)
-                penalizacion = 0
-                if meses_restantes > 0:
-                    penalizacion = meses_restantes * deduccion_mensual
-                
-                lista_vr.append(max(0, saldo_actual - penalizacion))
-                lista_aportes_acum.append(aporte_acumulado)
-            
-            df = df.iloc[:len(lista_vn)].copy()
-            df['Aporte_Acum'] = lista_aportes_acum
-            df['Valor_Cuenta'] = lista_vn
-            df['Valor_Rescate'] = lista_vr
-            df['Retiro'] = lista_retiros
-
-        # --- GENERACIÓN DE REPORTE ---
-        resumen = df.groupby('Year').agg({
-            'Aporte_Acum': 'last',
-            'Valor_Cuenta': 'last',
-            'Valor_Rescate': 'last',
-            'Retiro': 'sum'
-        }).reset_index()
-        
-        # Cálculo Rendimiento
-        resumen['Saldo_Inicial'] = resumen['Valor_Cuenta'].shift(1).fillna(0)
-        resumen['Aporte_Nuevo'] = resumen['Aporte_Acum'] - resumen['Aporte_Acum'].shift(1).fillna(0)
-        
-        # Ganancia = Final - Inicial - Aportes + Retiros
-        resumen['Ganancia'] = resumen['Valor_Cuenta'] - resumen['Saldo_Inicial'] - resumen['Aporte_Nuevo'] + resumen['Retiro']
-        resumen['Base_Calculo'] = (resumen['Saldo_Inicial'] + resumen['Aporte_Nuevo']).replace(0, 1)
-        resumen['Rendimiento'] = (resumen['Ganancia'] / resumen['Base_Calculo']) * 100
-
-        # --- GRÁFICO ---
-        fig = plt.figure(figsize=(11, 14))
-        plt.suptitle(f'Plan: {seleccion}\nCliente: {nombre_cliente}', fontsize=18, weight='bold', y=0.98)
-        
-        subtitulo = f"Estrategia ({1+len(aportes_extra)} Aportes)" if seleccion.startswith("MIS") else f"Aporte {frecuencia_pago}: ${monto_input:,.0f}"
-        plt.figtext(0.5, 0.925, subtitulo, ha="center", fontsize=14, color='#555')
-        
-        inv_total = resumen['Aporte_Acum'].iloc[-1]
-        ret_total = resumen['Retiro'].sum()
-        val_final = resumen['Valor_Cuenta'].iloc[-1]
-        val_rescate_final = resumen['Valor_Rescate'].iloc[-1]
-        
-        if ret_total > 0:
-            texto_resumen = f"Inv. Total: ${inv_total:,.0f} | Retiros: ${ret_total:,.0f} | Valor Cuenta: ${val_final:,.0f}"
+        if tipo_plan == "MIS":
+            df_resultado = simular_mis(
+                df_base=df_mercado,
+                monto_inicial=float(monto_input),
+                anio_inicio=int(anio_inicio),
+                mes_inicio=int(mes_inicio),
+                aportes_extra=aportes_extra,
+                retiros_programados=retiros_programados
+            )
+            subtitulo = f"Estrategia ({1 + len(aportes_extra)} aportes)"
         else:
-            texto_resumen = f"Inv. Total: ${inv_total:,.0f} | Valor Cuenta: ${val_final:,.0f} | Valor Rescate: ${val_rescate_final:,.0f}"
-            
-        plt.figtext(0.5, 0.88, texto_resumen, ha="center", fontsize=11, weight='bold', bbox=dict(facecolor='#f0f8ff', edgecolor='blue'))
+            df_resultado = simular_mss(
+                df_base=df_mercado,
+                plazo_anios=int(plazo_anios),
+                monto_aporte=float(monto_input),
+                frecuencia_pago=frecuencia_pago,
+                anio_inicio=int(anio_inicio),
+                mes_inicio=int(mes_inicio),
+                retiros_programados=retiros_programados
+            )
+            subtitulo = f"Aporte {frecuencia_pago}: {fmt_usd(monto_input)}"
 
-        ax = plt.subplot2grid((10, 1), (1, 0), rowspan=4)
-        
-        # COLORES DEFINITIVOS
-        # 1. Aporte: Verde Punteado
-        ax.plot(df['Date'], df['Aporte_Acum'], color='#2ca02c', ls='--', label="Capital Invertido", alpha=0.9, lw=2)
-        # 2. Rescate: Gris Punteado
-        ax.plot(df['Date'], df['Valor_Rescate'], color='#808080', ls='--', label="Valor Rescate", alpha=0.9, lw=2)
-        # 3. Cuenta: Azul Solido
-        ax.plot(df['Date'], df['Valor_Cuenta'], color='#004c99', lw=2.5, label="Valor Cuenta")
-        
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        ax.yaxis.set_major_formatter(ticker.StrMethodFormatter('${x:,.0f}'))
+        resumen = construir_resumen_anual(df_resultado)
+        fig_principal = crear_figura_principal(df_resultado, resumen, seleccion, nombre_cliente, subtitulo)
 
-        # --- TABLA ---
-        ax_tabla = plt.subplot2grid((10, 1), (6, 0), rowspan=4)
-        ax_tabla.axis('off')
-        
-        filas = [['Año', 'Aporte Total', 'Retiro', 'Valor Cuenta', 'Valor Rescate', '% Rend']]
-        
-        for _, r in resumen.iterrows():
-            txt_retiro = f"${r['Retiro']:,.0f}" if r['Retiro'] > 0 else "-"
-            filas.append([
-                str(int(r['Year'])), 
-                f"${r['Aporte_Acum']:,.0f}", 
-                txt_retiro,
-                f"${r['Valor_Cuenta']:,.0f}", 
-                f"${r['Valor_Rescate']:,.0f}", 
-                f"{r['Rendimiento']:+.1f}%"
+        st.success("✅ Ilustración generada.")
+        st.pyplot(fig_principal, use_container_width=True)
+
+        st.subheader("Resumen anual")
+
+        mostrar = preparar_tabla_mostrar(resumen)
+
+        styled = (
+            mostrar.style
+            .format({
+                "Aporte acumulado": fmt_usd,
+                "Retiro": fmt_usd,
+                "Valor en cuenta": fmt_usd,
+                "Valor de rescate": fmt_usd,
+                "Rendimiento": fmt_pct,
+                "Rendimiento acumulado": fmt_pct,
+            })
+            .set_properties(**{
+                "font-size": "11px",
+                "text-align": "center",
+                "white-space": "nowrap"
+            })
+            .set_table_styles([
+                {
+                    "selector": "th",
+                    "props": [
+                        ("background-color", "#40466e"),
+                        ("color", "white"),
+                        ("font-weight", "bold"),
+                        ("text-align", "center"),
+                        ("font-size", "11px"),
+                    ]
+                },
+                {
+                    "selector": "td",
+                    "props": [
+                        ("padding", "6px 10px"),
+                    ]
+                }
             ])
-            
-        tabla = ax_tabla.table(cellText=filas, loc='center', cellLoc='center')
-        tabla.scale(1, 1.35)
-        tabla.auto_set_font_size(False)
-        tabla.set_fontsize(8)
-        
-        for (fila, col), celda in tabla.get_celld().items():
-            if fila == 0: 
-                celda.set_facecolor('#40466e')
-                celda.set_text_props(color='white', weight='bold')
-            elif fila % 2 == 0: 
-                celda.set_facecolor('#f2f2f2')
-            
-            # Color Rendimiento (Col 5)
-            if col == 5 and fila > 0:
-                texto = celda.get_text().get_text()
-                color_texto = 'green' if '+' in texto else 'black'
-                celda.set_text_props(color=color_texto, weight='bold')
-            
-            # Color Retiro (Col 2)
-            if col == 2 and fila > 0 and celda.get_text().get_text() != "-":
-                celda.set_text_props(color='#d62728', weight='bold')
-            
-            # Color Rescate (Col 4) - ALERTA ORO
-            if col == 4 and fila > 0:
-                val_rescate = float(celda.get_text().get_text().replace('$','').replace(',',''))
-                # Comparamos con Aporte Total (Columna 1)
-                val_inversion = float(filas[fila][1].replace('$','').replace(',',''))
-                
-                # Si Rescate es MENOR que lo Invertido -> AMARILLO ORO
-                if val_rescate < val_inversion:
-                    celda.set_text_props(color='#D4AC0D', weight='bold')
+            .apply(
+                lambda row: [
+                    "color: #D4AC0D; font-weight: bold;" if (
+                        col == "Valor de rescate" and row["Valor de rescate"] < row["Aporte acumulado"]
+                    ) else ""
+                    for col in row.index
+                ],
+                axis=1
+            )
+        )
 
-        plt.tight_layout(rect=[0, 0.03, 1, 0.86])
-        st.pyplot(fig)
-        
-        # Descarga
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='pdf')
-        buffer.seek(0)
-        st.download_button("📥 Descargar PDF", buffer, f"Ilustracion_{nombre_cliente}.pdf", "application/pdf")
-        status.success("✅ ¡Ilustración Generada!")
+        st.dataframe(styled, use_container_width=True, hide_index=True)
 
-    except Exception as e:
-        status.error("❌ Ocurrió un error")
-        st.write(traceback.format_exc())
+        tabla_export = mostrar.copy()
+        tabla_export["Aporte acumulado"] = tabla_export["Aporte acumulado"].map(fmt_usd)
+        tabla_export["Retiro"] = tabla_export["Retiro"].map(fmt_usd)
+        tabla_export["Valor en cuenta"] = tabla_export["Valor en cuenta"].map(fmt_usd)
+        tabla_export["Valor de rescate"] = tabla_export["Valor de rescate"].map(fmt_usd)
+        tabla_export["Rendimiento"] = tabla_export["Rendimiento"].map(fmt_pct)
+        tabla_export["Rendimiento acumulado"] = tabla_export["Rendimiento acumulado"].map(fmt_pct)
+
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            excel_data = generar_tabla_excel(tabla_export)
+            if excel_data:
+                st.download_button(
+                    "📥 Descargar tabla en Excel",
+                    data=excel_data,
+                    file_name=f"Tabla_Resumen_{nombre_cliente}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.info("Exportación a Excel no disponible (falta instalar openpyxl).")
+
+        with c2:
+            st.download_button(
+                "📥 Descargar tabla en PDF",
+                data=generar_tabla_pdf(tabla_export, titulo=f"Resumen anual - {nombre_cliente}"),
+                file_name=f"Tabla_Resumen_{nombre_cliente}.pdf",
+                mime="application/pdf"
+            )
+
+        with c3:
+            st.download_button(
+                "📥 Descargar ilustración completa en PDF",
+                data=generar_pdf_completo(fig_principal, tabla_export, nombre_cliente),
+                file_name=f"Ilustracion_{nombre_cliente}.pdf",
+                mime="application/pdf"
+            )
+
+    except Exception:
+        st.error("❌ Ocurrió un error al generar la ilustración.")
+        st.code(traceback.format_exc())
