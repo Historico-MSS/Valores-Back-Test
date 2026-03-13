@@ -94,7 +94,6 @@ def descargar_sp500_mensual() -> pd.DataFrame:
     df["Price"] = pd.to_numeric(df["Close"], errors="coerce")
     df = df.dropna(subset=["Date", "Price"]).sort_values("Date").reset_index(drop=True)
 
-    # Último cierre disponible de cada mes
     df["Month"] = df["Date"].dt.to_period("M")
     df = df.groupby("Month", as_index=False).last()
     df["Date"] = df["Month"].dt.to_timestamp("M")
@@ -104,19 +103,12 @@ def descargar_sp500_mensual() -> pd.DataFrame:
 
 
 def agregar_rendimiento_neto_tracker(df: pd.DataFrame, amc_anual: float = AMC_ANUAL) -> pd.DataFrame:
-    """
-    Convierte la serie mensual del S&P 500 en una serie neta mensual,
-    descontando el AMC anual prorrateado mensualmente.
-    """
     df = df.copy().sort_values("Date").reset_index(drop=True)
 
-    # Rendimiento bruto mensual del índice
     df["Retorno_Bruto"] = df["Price"].pct_change().fillna(0.0)
 
-    # Factor mensual equivalente compuesto del AMC
     factor_fee_mensual = (1 - amc_anual) ** (1 / 12)
 
-    # Rendimiento neto mensual
     df["Retorno_Neto"] = ((1 + df["Retorno_Bruto"]) * factor_fee_mensual) - 1
 
     return df
@@ -349,7 +341,7 @@ def simular_mss(
             valor_rescate = max(0.0, saldo_actual)
             etapa = "Post-maduración"
 
-        saldo_actual = max(0.0, 0.0 + saldo_actual)
+        saldo_actual = max(0.0, saldo_actual)
 
         lista_vn.append(saldo_actual)
         lista_vr.append(valor_rescate)
@@ -378,7 +370,6 @@ def construir_resumen_anual(df: pd.DataFrame, anio_inicio: int, mes_inicio: int)
     ultimo_anio = int(df["Year"].max())
     ultimo_mes_real = int(df.loc[df["Year"] == ultimo_anio, "Month"].max())
 
-    # Siempre mostrar hasta el mes anterior al actual si es el año en curso
     if ultimo_anio == hoy.year:
         mes_corte = hoy.month - 1
         if mes_corte < 1:
@@ -503,10 +494,20 @@ def crear_figura_principal(df: pd.DataFrame, resumen: pd.DataFrame, seleccion: s
     val_final = resumen["Valor_Cuenta"].iloc[-1] if not resumen.empty else 0
     val_rescate_final = resumen["Valor_Rescate"].iloc[-1] if not resumen.empty else 0
 
+    if inv_total > 0 and len(df) > 1 and val_final > 0:
+        años = (df["Date"].iloc[-1] - df["Date"].iloc[0]).days / 365.25
+        if años > 0:
+            rendimiento_anual_promedio = ((val_final / inv_total) ** (1 / años) - 1) * 100
+        else:
+            rendimiento_anual_promedio = 0.0
+    else:
+        rendimiento_anual_promedio = 0.0
+
     texto_resumen = (
         f"Inversión total: {fmt_usd(inv_total)}   |   "
         f"Valor en cuenta: {fmt_usd(val_final)}   |   "
-        f"Valor de rescate: {fmt_usd(val_rescate_final)}"
+        f"Valor de rescate: {fmt_usd(val_rescate_final)}   |   "
+        f"Rendimiento anual promedio: {rendimiento_anual_promedio:.2f}%"
     )
     if ret_total > 0:
         texto_resumen += f"   |   Retiros: {fmt_usd(ret_total)}"
