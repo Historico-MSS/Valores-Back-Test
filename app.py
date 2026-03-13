@@ -58,7 +58,10 @@ LISTA_MESES = [
 CACHE_DIR = "data_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+# Stooq diario -> luego convertimos a mensual
 STOOQ_DAILY_URL = "https://stooq.com/q/d/l/?s=%5Espx&i=d"
+
+# AMC del tracker simulado
 AMC_ANUAL = 0.02
 
 
@@ -104,16 +107,21 @@ def descargar_sp500_mensual() -> pd.DataFrame:
 
 
 def agregar_rendimiento_neto_tracker(df: pd.DataFrame, amc_anual: float = AMC_ANUAL) -> pd.DataFrame:
+    """
+    Toma la serie mensual del S&P 500 y crea una serie neta mensual,
+    descontando el AMC anual prorrateado mensualmente.
+    """
     df = df.copy().sort_values("Date").reset_index(drop=True)
 
-    # Rendimiento bruto mensual del índice
+    # Retorno bruto mensual del índice
     df["Retorno_Bruto"] = df["Price"].pct_change().fillna(0.0)
 
-    # Fee mensual equivalente compuesto
+    # Factor mensual equivalente compuesto
     factor_fee_mensual = (1 - amc_anual) ** (1 / 12)
 
-    # Rendimiento neto mensual luego de AMC
+    # Retorno neto mensual
     df["Retorno_Neto"] = ((1 + df["Retorno_Bruto"]) * factor_fee_mensual) - 1
+
     return df
 
 
@@ -137,6 +145,7 @@ def cargar_serie_mercado(forzar_actualizacion: bool = False):
     df = df.dropna(subset=["Date", "Price"]).sort_values("Date").reset_index(drop=True)
 
     df = agregar_rendimiento_neto_tracker(df, amc_anual=AMC_ANUAL)
+
     return df, origen
 
 
@@ -241,6 +250,7 @@ def simular_mis(
                 saldo_total_previo += c["monto"]
 
             if c["activa"]:
+                # Rendimiento compuesto mensual neto de AMC
                 if c["edad"] > 0:
                     c["saldo"] *= (1 + retornos_netos[i])
 
@@ -316,10 +326,12 @@ def simular_mss(
     for i in range(len(df)):
         fecha_act = df["Date"].iloc[i]
 
+        # aportes solo durante el plazo del plan
         if i < meses_totales and i % step_meses == 0:
             saldo_actual += monto_aporte
             aporte_acumulado += monto_aporte
 
+        # rendimiento compuesto mensual neto de AMC
         if i > 0:
             saldo_actual *= (1 + retornos_netos[i])
 
@@ -393,9 +405,6 @@ def construir_resumen_anual(df: pd.DataFrame, anio_inicio: int, mes_inicio: int)
         fila = {
             "Periodo_N": idx_periodo,
             "Periodo_Label": f"{LISTA_MESES[mes_desde - 1]} - {LISTA_MESES[mes_hasta - 1]} {anio}",
-            "Year": anio,
-            "Mes_Desde": mes_desde,
-            "Mes_Hasta": mes_hasta,
             "Aporte_Acum": sub["Aporte_Acum"].iloc[-1],
             "Retiro": sub["Retiro"].sum(),
             "Valor_Cuenta": sub["Valor_Cuenta"].iloc[-1],
@@ -473,7 +482,7 @@ def crear_figura_principal(df: pd.DataFrame, resumen: pd.DataFrame, seleccion: s
 
     fig.text(
         0.5, 0.895,
-        "Base de cálculo: S&P 500 mensual real con AMC 2.0% anual prorrateado mensualmente",
+        "Serie histórica neta basada en el S&P 500, con costos anuales prorrateados mensualmente.",
         ha="center", va="top",
         fontsize=10.5, color="#666666"
     )
@@ -716,7 +725,7 @@ def generar_pdf_completo(fig_principal, tabla_export: pd.DataFrame, nombre_clien
 
 # --- CARGA DE MERCADO ---
 st.sidebar.header("Serie de mercado")
-st.sidebar.caption("Base única neta: S&P 500 mensual real con AMC 2.0% anual")
+st.sidebar.caption("Serie histórica neta basada en el S&P 500.")
 forzar_actualizacion = st.sidebar.button("🔄 Actualizar base ahora")
 
 try:
@@ -736,7 +745,7 @@ planes_disponibles = detectar_planes_csv()
 
 # --- UI PRINCIPAL ---
 st.title("💼 Generador de Ilustraciones Financieras")
-st.caption("Usando una base neta mensual con AMC 2.0% anual prorrateado mensualmente y rendimiento compuesto.")
+st.caption("Serie histórica neta basada en el S&P 500, con costos anuales prorrateados mensualmente.")
 st.info("Disclaimer: esta herramienta es únicamente ilustrativa. No constituye una proyección garantizada, una oferta, ni asesoría financiera, legal o fiscal.")
 
 with st.sidebar:
@@ -775,7 +784,7 @@ with st.sidebar:
     aportes_extra = []
     retiros_programados = []
 
-    archivo_csv, plazo_anios, tipo_plan = planes_disponibles[seleccion]
+    _, plazo_anios, tipo_plan = planes_disponibles[seleccion]
 
     if tipo_plan == "MIS":
         monto_input = st.number_input("Inversión Inicial (USD)", min_value=1000, value=10000, step=1000)
