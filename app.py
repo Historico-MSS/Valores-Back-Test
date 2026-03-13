@@ -51,23 +51,20 @@ FACTORES_COSTOS = {
 }
 
 LISTA_MESES = [
-    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
+    "ene", "feb", "mar", "abr", "may", "jun",
+    "jul", "ago", "sept", "oct", "nov", "dic"
 ]
 
 CACHE_DIR = "data_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-# Stooq diario -> luego convertimos a mensual real
 STOOQ_DAILY_URL = "https://stooq.com/q/d/l/?s=%5Espx&i=d"
-
-# AMC anual del tracker
 AMC_ANUAL = 0.02
 
 
 # --- UTILIDADES ---
 def mes_numero(nombre_mes: str) -> int:
-    return LISTA_MESES.index(nombre_mes) + 1
+    return LISTA_MESES.index(nombre_mes.lower()) + 1
 
 
 def fmt_usd(x):
@@ -107,21 +104,16 @@ def descargar_sp500_mensual() -> pd.DataFrame:
 
 
 def agregar_rendimiento_neto_tracker(df: pd.DataFrame, amc_anual: float = AMC_ANUAL) -> pd.DataFrame:
-    """
-    Convierte la serie mensual de precios del S&P 500 en una serie mensual neta,
-    descontando un AMC anual prorrateado mensualmente y capitalizado de forma compuesta.
-    """
     df = df.copy().sort_values("Date").reset_index(drop=True)
 
-    # Retorno bruto mensual del índice
+    # Rendimiento bruto mensual del índice
     df["Retorno_Bruto"] = df["Price"].pct_change().fillna(0.0)
 
-    # Factor mensual equivalente del AMC anual
+    # Fee mensual equivalente compuesto
     factor_fee_mensual = (1 - amc_anual) ** (1 / 12)
 
-    # Retorno neto mensual del tracker simulado
+    # Rendimiento neto mensual luego de AMC
     df["Retorno_Neto"] = ((1 + df["Retorno_Bruto"]) * factor_fee_mensual) - 1
-
     return df
 
 
@@ -249,7 +241,6 @@ def simular_mis(
                 saldo_total_previo += c["monto"]
 
             if c["activa"]:
-                # Interés compuesto mensual usando retorno neto del tracker
                 if c["edad"] > 0:
                     c["saldo"] *= (1 + retornos_netos[i])
 
@@ -325,12 +316,10 @@ def simular_mss(
     for i in range(len(df)):
         fecha_act = df["Date"].iloc[i]
 
-        # APORTES SOLO DURANTE EL PLAZO DEL PLAN
         if i < meses_totales and i % step_meses == 0:
             saldo_actual += monto_aporte
             aporte_acumulado += monto_aporte
 
-        # Interés compuesto mensual usando retorno neto del tracker
         if i > 0:
             saldo_actual *= (1 + retornos_netos[i])
 
@@ -370,26 +359,59 @@ def simular_mss(
     return df
 
 
-def construir_resumen_anual(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
+def construir_resumen_anual(df: pd.DataFrame, anio_inicio: int, mes_inicio: int) -> pd.DataFrame:
+    df = df.copy().sort_values("Date").reset_index(drop=True)
 
-    if "Mes_Plan" not in df.columns:
-        df["Mes_Plan"] = range(1, len(df) + 1)
+    if df.empty:
+        return pd.DataFrame()
 
-    df["Año_Plan"] = ((df["Mes_Plan"] - 1) // 12) + 1
+    df["Year"] = df["Date"].dt.year
+    df["Month"] = df["Date"].dt.month
 
-    agg_cols = {
-        "Year": "last",
-        "Aporte_Acum": "last",
-        "Valor_Cuenta": "last",
-        "Valor_Rescate": "last",
-        "Retiro": "sum"
-    }
+    ultimo_anio = int(df["Year"].max())
+    ultimo_mes = int(df["Month"].max())
 
-    if "Etapa" in df.columns:
-        agg_cols["Etapa"] = "last"
+    periodos = []
+    idx_periodo = 1
 
-    resumen = df.groupby("Año_Plan", as_index=False).agg(agg_cols)
+    for anio in sorted(df["Year"].unique()):
+        if anio == anio_inicio:
+            mes_desde = mes_inicio
+            mes_hasta = 12
+        elif anio == ultimo_anio:
+            mes_desde = 1
+            mes_hasta = ultimo_mes
+        else:
+            mes_desde = 1
+            mes_hasta = 12
+
+        sub = df[(df["Year"] == anio) & (df["Month"] >= mes_desde) & (df["Month"] <= mes_hasta)].copy()
+
+        if sub.empty:
+            continue
+
+        fila = {
+            "Periodo_N": idx_periodo,
+            "Periodo_Label": f"{LISTA_MESES[mes_desde - 1]} - {LISTA_MESES[mes_hasta - 1]} {anio}",
+            "Year": anio,
+            "Mes_Desde": mes_desde,
+            "Mes_Hasta": mes_hasta,
+            "Aporte_Acum": sub["Aporte_Acum"].iloc[-1],
+            "Retiro": sub["Retiro"].sum(),
+            "Valor_Cuenta": sub["Valor_Cuenta"].iloc[-1],
+            "Valor_Rescate": sub["Valor_Rescate"].iloc[-1],
+        }
+
+        if "Etapa" in sub.columns:
+            fila["Etapa"] = sub["Etapa"].iloc[-1]
+
+        periodos.append(fila)
+        idx_periodo += 1
+
+    resumen = pd.DataFrame(periodos)
+
+    if resumen.empty:
+        return resumen
 
     resumen["Saldo_Inicial"] = resumen["Valor_Cuenta"].shift(1).fillna(0)
     resumen["Aporte_Nuevo"] = resumen["Aporte_Acum"] - resumen["Aporte_Acum"].shift(1).fillna(0)
@@ -415,8 +437,8 @@ def construir_resumen_anual(df: pd.DataFrame) -> pd.DataFrame:
     resumen["Rendimiento_Acumulado"] = resumen["Rendimiento_Acumulado"].fillna(0)
 
     columnas_finales = [
-        "Año_Plan",
-        "Year",
+        "Periodo_N",
+        "Periodo_Label",
         "Aporte_Acum",
         "Retiro",
         "Valor_Cuenta",
@@ -535,8 +557,8 @@ def crear_figura_principal(df: pd.DataFrame, resumen: pd.DataFrame, seleccion: s
 
 def preparar_tabla_mostrar(resumen: pd.DataFrame) -> pd.DataFrame:
     mostrar = resumen.copy().rename(columns={
-        "Año_Plan": "Año de plan",
-        "Year": "Año calendario",
+        "Periodo_N": "Año",
+        "Periodo_Label": "Meses",
         "Aporte_Acum": "Aporte acumulado",
         "Retiro": "Retiro",
         "Valor_Cuenta": "Valor en cuenta",
@@ -546,8 +568,8 @@ def preparar_tabla_mostrar(resumen: pd.DataFrame) -> pd.DataFrame:
     })
 
     columnas_orden = [
-        "Año de plan",
-        "Año calendario",
+        "Año",
+        "Meses",
         "Aporte acumulado",
         "Retiro",
         "Valor en cuenta",
@@ -832,7 +854,12 @@ if generar:
             )
             subtitulo = f"Aporte {frecuencia_pago}: {fmt_usd(monto_input)}"
 
-        resumen = construir_resumen_anual(df_resultado)
+        resumen = construir_resumen_anual(
+            df_resultado,
+            anio_inicio=int(anio_inicio),
+            mes_inicio=int(mes_inicio)
+        )
+
         fig_principal = crear_figura_principal(df_resultado, resumen, seleccion, nombre_cliente, subtitulo)
 
         st.success("✅ Ilustración generada.")
@@ -841,6 +868,17 @@ if generar:
         st.subheader("Resumen anual")
 
         mostrar = preparar_tabla_mostrar(resumen)
+
+        def estilo_rendimiento(val):
+            try:
+                v = float(val)
+                if v > 0:
+                    return "color: #1b5e20; font-weight: bold;"
+                elif v < 0:
+                    return "color: #b71c1c; font-weight: bold;"
+                return ""
+            except Exception:
+                return ""
 
         styled = (
             mostrar.style
@@ -875,6 +913,7 @@ if generar:
                     ]
                 }
             ])
+            .map(estilo_rendimiento, subset=["Rendimiento", "Rendimiento acumulado"])
             .apply(
                 lambda row: [
                     "color: #D4AC0D; font-weight: bold;" if (
