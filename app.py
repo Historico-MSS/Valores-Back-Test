@@ -58,10 +58,7 @@ LISTA_MESES = [
 CACHE_DIR = "data_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-# Stooq diario -> luego convertimos a mensual
 STOOQ_DAILY_URL = "https://stooq.com/q/d/l/?s=%5Espx&i=d"
-
-# AMC del tracker simulado
 AMC_ANUAL = 0.02
 
 
@@ -108,18 +105,18 @@ def descargar_sp500_mensual() -> pd.DataFrame:
 
 def agregar_rendimiento_neto_tracker(df: pd.DataFrame, amc_anual: float = AMC_ANUAL) -> pd.DataFrame:
     """
-    Toma la serie mensual del S&P 500 y crea una serie neta mensual,
+    Convierte la serie mensual del S&P 500 en una serie neta mensual,
     descontando el AMC anual prorrateado mensualmente.
     """
     df = df.copy().sort_values("Date").reset_index(drop=True)
 
-    # Retorno bruto mensual del índice
+    # Rendimiento bruto mensual del índice
     df["Retorno_Bruto"] = df["Price"].pct_change().fillna(0.0)
 
-    # Factor mensual equivalente compuesto
+    # Factor mensual equivalente compuesto del AMC
     factor_fee_mensual = (1 - amc_anual) ** (1 / 12)
 
-    # Retorno neto mensual
+    # Rendimiento neto mensual
     df["Retorno_Neto"] = ((1 + df["Retorno_Bruto"]) * factor_fee_mensual) - 1
 
     return df
@@ -250,7 +247,6 @@ def simular_mis(
                 saldo_total_previo += c["monto"]
 
             if c["activa"]:
-                # Rendimiento compuesto mensual neto de AMC
                 if c["edad"] > 0:
                     c["saldo"] *= (1 + retornos_netos[i])
 
@@ -326,12 +322,10 @@ def simular_mss(
     for i in range(len(df)):
         fecha_act = df["Date"].iloc[i]
 
-        # aportes solo durante el plazo del plan
         if i < meses_totales and i % step_meses == 0:
             saldo_actual += monto_aporte
             aporte_acumulado += monto_aporte
 
-        # rendimiento compuesto mensual neto de AMC
         if i > 0:
             saldo_actual *= (1 + retornos_netos[i])
 
@@ -355,7 +349,7 @@ def simular_mss(
             valor_rescate = max(0.0, saldo_actual)
             etapa = "Post-maduración"
 
-        saldo_actual = max(0.0, saldo_actual)
+        saldo_actual = max(0.0, 0.0 + saldo_actual)
 
         lista_vn.append(saldo_actual)
         lista_vr.append(valor_rescate)
@@ -380,8 +374,18 @@ def construir_resumen_anual(df: pd.DataFrame, anio_inicio: int, mes_inicio: int)
     df["Year"] = df["Date"].dt.year
     df["Month"] = df["Date"].dt.month
 
+    hoy = pd.Timestamp.today()
     ultimo_anio = int(df["Year"].max())
-    ultimo_mes = int(df["Month"].max())
+    ultimo_mes_real = int(df.loc[df["Year"] == ultimo_anio, "Month"].max())
+
+    # Siempre mostrar hasta el mes anterior al actual si es el año en curso
+    if ultimo_anio == hoy.year:
+        mes_corte = hoy.month - 1
+        if mes_corte < 1:
+            mes_corte = 1
+        ultimo_mes = min(ultimo_mes_real, mes_corte)
+    else:
+        ultimo_mes = ultimo_mes_real
 
     periodos = []
     idx_periodo = 1
@@ -731,8 +735,17 @@ forzar_actualizacion = st.sidebar.button("🔄 Actualizar base ahora")
 try:
     df_mercado, origen_base = cargar_serie_mercado(forzar_actualizacion=forzar_actualizacion)
     st.sidebar.success(f"Base cargada: {len(df_mercado)} meses")
+
+    hoy = pd.Timestamp.today()
+    max_fecha = df_mercado["Date"].max()
+
+    if max_fecha.year == hoy.year and max_fecha.month >= hoy.month:
+        fecha_mostrar = max_fecha - pd.DateOffset(months=1)
+    else:
+        fecha_mostrar = max_fecha
+
     st.sidebar.caption(
-        f"Rango disponible: {df_mercado['Date'].min().strftime('%Y-%m')} a {df_mercado['Date'].max().strftime('%Y-%m')}"
+        f"Rango disponible: {df_mercado['Date'].min().strftime('%Y-%m')} a {fecha_mostrar.strftime('%Y-%m')}"
     )
     st.sidebar.caption(f"Origen: {origen_base}")
 except Exception:
